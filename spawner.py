@@ -33,7 +33,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'render', 'record', 'with_layernorm',
+BOOL_ARGS = ['cuda', 'pixels', 'enable_visdom', 'render', 'record', 'with_layernorm',
              'state_only', 'minimax_only']
 
 # Create the list of environments from the indicated benchmark
