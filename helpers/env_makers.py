@@ -19,7 +19,6 @@ def get_benchmark(env_id):
 
 
 def make_mujoco_env(env_id, seed, pixels, width=84, height=84, grayscale=True, k=4):
-    """Create a wrapped gym.Env for MuJoCo"""
     env = gym.make(env_id)
     env.seed(seed)
     # Apply wrappers
@@ -29,8 +28,7 @@ def make_mujoco_env(env_id, seed, pixels, width=84, height=84, grayscale=True, k
     return env
 
 
-def make_classic_env(env_id, seed):
-    """Create a wrapped gym.Env for VM"""
+def make_env_(env_id, seed):
     env = gym.make(env_id)
     env.seed(seed)
     return env
@@ -42,6 +40,6 @@ def make_env(env_id, seed, pixels, width, height, grayscale, k):
     if benchmark == 'mujoco':
         return make_mujoco_env(env_id, seed, pixels, width, height, grayscale, k)
     elif benchmark == 'classic':
-        return make_classic_env(env_id, seed)
+        return make_env_(env_id, seed)
     else:
         raise RuntimeError("unknown benchmark")

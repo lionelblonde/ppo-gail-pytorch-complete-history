@@ -17,16 +17,9 @@ def ortho_init(module, nonlinearity=None, weight_scale=1.0, constant_bias=0.0):
     else:
         gain = weight_scale
 
-    if isinstance(module, (nn.RNNBase, rnn.RNNCellBase)):
-        for name, param in module.named_parameters():
-            if 'weight_' in name:
-                nn.init.orthogonal_(param, gain=gain)
-            elif 'bias_' in name:
-                nn.init.constant_(param, constant_bias)
-    else:  # other modules with single .weight and .bias
-        nn.init.orthogonal_(module.weight, gain=gain)
-        if module.bias is not None:
-            nn.init.constant_(module.bias, constant_bias)
+    nn.init.orthogonal_(module.weight, gain=gain)
+    if module.bias is not None:
+        nn.init.constant_(module.bias, constant_bias)
 
 
 class LSTM(nn.Module):
@@ -167,32 +160,26 @@ class CatToolkit(object):
 
 class ShallowMLP(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, hidden_size):
         """MLP layer stack as usually used in Deep RL"""
         super(ShallowMLP, self).__init__()
         ob_dim = env.observation_space.shape[0]
         # Create fully-connected layers
-        self.fc_1 = nn.Linear(ob_dim, 64)
-        self.fc_2 = nn.Linear(64, 64)
-        ortho_init(self.fc_1, nonlinearity='tanh', constant_bias=0.0)
-        ortho_init(self.fc_2, nonlinearity='tanh', constant_bias=0.0)
+        self.fc = nn.Linear(ob_dim, hidden_size)
+        ortho_init(self.fc, nonlinearity='relu', constant_bias=0.0)
         # Define layernorm layers
-        self.ln_1 = nn.LayerNorm(64) if hps.with_layernorm else lambda x: x
-        self.ln_2 = nn.LayerNorm(64) if hps.with_layernorm else lambda x: x
+        self.ln = nn.LayerNorm(hidden_size) if hps.with_layernorm else lambda x: x
 
     def forward(self, ob):
         plop = ob
         # Stack fully-connected layers
-        plop = torch.tanh(self.ln_1(self.fc_1(plop)))
-        plop = torch.tanh(self.ln_2(self.fc_2(plop)))
+        plop = F.relu(self.ln(self.fc(plop)))
         return plop
 
 
 def parser_x(x):
     if x == 'shallow_mlp':
-        return (lambda u, v: ShallowMLP(u, v)), 64
-    elif x == 'none':
-        return (lambda x: x), None
+        return (lambda u, v: ShallowMLP(u, v, hidden_size=64)), 64
     else:
         raise NotImplementedError("invalid feature extractor")
 
@@ -203,18 +190,26 @@ class MLPGaussPolicy(nn.Module):
 
     def __init__(self, env, hps):
         super(MLPGaussPolicy, self).__init__()
-        ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
 
         # Define feature extractor
         net_lambda, fc_in = parser_x(hps.feat_x_p)
         self.net_x = net_lambda(env, hps)
 
+        # Create last fully-connected layers
+        self.fc_last_p = nn.Linear(fc_in, fc_in)
+        self.fc_last_v = nn.Linear(fc_in, fc_in)
+        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
+        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
+        # Define layernorm layers
+        self.ln_last_p = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
+        self.ln_last_v = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
+
         # Define output heads
-        self.ac_mean_head = nn.Linear(fc_in if fc_in is not None else ob_dim, ac_dim)
+        self.ac_mean_head = nn.Linear(fc_in, ac_dim)
         ortho_init(self.ac_mean_head, weight_scale=0.01, constant_bias=0.0)
         self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
-        self.value_head = nn.Linear(fc_in if fc_in is not None else ob_dim, 1)
+        self.value_head = nn.Linear(fc_in, 1)
         ortho_init(self.value_head, nonlinearity='linear', constant_bias=0.0)
 
     def logp(self, ob, ac):
@@ -254,10 +249,15 @@ class MLPGaussPolicy(nn.Module):
         plop = ob
         # Pipe through the feature extractor
         plop = self.net_x(plop)
+        # Go through residual fully-connected layers specific for each head
+        # inspired from OpenAI's RND repo, file located at
+        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
+        feat_fc_last_p = plop + F.relu(self.ln_last_p(self.fc_last_p(plop)))
+        feat_fc_last_v = plop + F.relu(self.ln_last_v(self.fc_last_v(plop)))
         # Go through the output heads
-        ac_mean = self.ac_mean_head(plop)
+        ac_mean = self.ac_mean_head(feat_fc_last_p)
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
-        value = self.value_head(plop)
+        value = self.value_head(feat_fc_last_v)
         return ac_mean, ac_std, value
 
 
@@ -265,7 +265,6 @@ class LSTMGaussPolicy(nn.Module):
 
     def __init__(self, env, hps):
         super(LSTMGaussPolicy, self).__init__()
-        ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
 
         # Define feature extractor
@@ -273,7 +272,16 @@ class LSTMGaussPolicy(nn.Module):
         self.net_x = net_lambda(env, hps)
 
         # Define reccurent layer
-        self.lstm = LSTM(fc_in if fc_in is not None else ob_dim, hps.hidden_state_size, hps)
+        self.lstm = LSTM(fc_in, hps.hidden_state_size, hps)
+
+        # Create last fully-connected layers
+        self.fc_last_p = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
+        self.fc_last_v = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
+        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
+        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
+        # Define layernorm layers
+        self.ln_last_p = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
+        self.ln_last_v = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
 
         # Define output heads
         self.ac_mean_head = nn.Linear(hps.hidden_state_size, ac_dim)
@@ -320,15 +328,18 @@ class LSTMGaussPolicy(nn.Module):
         plop = ob
         # Pipe through the feature extractor
         plop = self.net_x(plop)
-
         # Add LSTM
         _, hc = self.lstm(plop, done, state)
-        h, c = hc.chunk(2, 1)
-
+        h, _ = hc.chunk(2, 1)
+        # Go through residual fully-connected layers specific for each head
+        # inspired from OpenAI's RND repo, file located at
+        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
+        feat_fc_last_p = h + F.relu(self.ln_last_p(self.fc_last_p(h)))
+        feat_fc_last_v = h + F.relu(self.ln_last_v(self.fc_last_v(h)))
         # Go through the output heads
-        ac_mean = self.ac_mean_head(h)
+        ac_mean = self.ac_mean_head(feat_fc_last_p)
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
-        value = self.value_head(h)
+        value = self.value_head(feat_fc_last_v)
         return ac_mean, ac_std, hc, value
 
 
@@ -343,10 +354,19 @@ class MLPCatPolicy(nn.Module):
         net_lambda, fc_in = parser_x(hps.feat_x_p)
         self.net_x = net_lambda(env, hps)
 
+        # Create last fully-connected layers
+        self.fc_last_p = nn.Linear(fc_in, fc_in)
+        self.fc_last_v = nn.Linear(fc_in, fc_in)
+        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
+        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
+        # Define layernorm layers
+        self.ln_last_p = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
+        self.ln_last_v = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
+
         # Define output layer
-        self.ac_logits_head = nn.Linear(fc_in if fc_in is not None else ob_dim, ac_dim)
+        self.ac_logits_head = nn.Linear(fc_in, ac_dim)
         ortho_init(self.ac_logits_head, weight_scale=0.01, constant_bias=0.0)
-        self.value_head = nn.Linear(fc_in if fc_in is not None else ob_dim, 1)
+        self.value_head = nn.Linear(fc_in, 1)
         ortho_init(self.value_head, nonlinearity='linear', constant_bias=0.0)
 
     def logp(self, ob, ac):
@@ -386,9 +406,14 @@ class MLPCatPolicy(nn.Module):
         plop = ob
         # Pipe through the feature extractor
         plop = self.net_x(plop)
+        # Go through residual fully-connected layers specific for each head
+        # inspired from OpenAI's RND repo, file located at
+        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
+        feat_fc_last_p = plop + F.relu(self.ln_last_p(self.fc_last_p(plop)))
+        feat_fc_last_v = plop + F.relu(self.ln_last_v(self.fc_last_v(plop)))
         # Go through the output heads
-        ac_logits = self.ac_logits_head(plop)
-        value = self.value_head(plop)
+        ac_logits = self.ac_logits_head(feat_fc_last_p)
+        value = self.value_head(feat_fc_last_v)
         return ac_logits, value
 
 
@@ -404,7 +429,16 @@ class LSTMCatPolicy(nn.Module):
         self.net_x = net_lambda(env, hps)
 
         # Define reccurent layer
-        self.lstm = LSTM(fc_in if fc_in is not None else ob_dim, hps.hidden_state_size, hps)
+        self.lstm = LSTM(fc_in, hps.hidden_state_size, hps)
+
+        # Create last fully-connected layers
+        self.fc_last_p = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
+        self.fc_last_v = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
+        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
+        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
+        # Define layernorm layers
+        self.ln_last_p = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
+        self.ln_last_v = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
 
         # Define output layer
         self.ac_logits_head = nn.Linear(hps.hidden_state_size, ac_dim)
@@ -451,10 +485,15 @@ class LSTMCatPolicy(nn.Module):
         plop = self.net_x(plop)
         # Add LSTM layers
         _, hc = self.lstm(plop, done, state)
-        h, c = hc.chunk(2, 1)
+        h, _ = hc.chunk(2, 1)
+        # Go through residual fully-connected layers specific for each head
+        # inspired from OpenAI's RND repo, file located at
+        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
+        feat_fc_last_p = h + F.relu(self.ln_last_p(self.fc_last_p(h)))
+        feat_fc_last_v = h + F.relu(self.ln_last_v(self.fc_last_v(h)))
         # Go through the output heads
-        ac_logits = self.ac_logits_head(h)
-        value = self.value_head(h)
+        ac_logits = self.ac_logits_head(feat_fc_last_p)
+        value = self.value_head(feat_fc_last_v)
         return ac_logits, hc, value
 
 

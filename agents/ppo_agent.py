@@ -21,6 +21,7 @@ class PPOAgent(object):
     def __init__(self, env, device, hps):
         self.env = env
         self.ob_space = self.env.observation_space
+
         self.ob_shape = self.ob_space.shape
         self.ac_space = self.env.action_space
         self.ac_shape = self.ac_space.shape
