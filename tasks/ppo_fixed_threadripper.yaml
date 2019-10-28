@@ -20,7 +20,7 @@ parameters:
   cuda: false
   pixels: false
   recurrent: false
-  num_seeds: 3
+  num_seeds: 2
   benchmark: 'mujoco'
   difficulty: 'normal'
   need_demos: false
