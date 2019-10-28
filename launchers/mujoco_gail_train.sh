@@ -33,11 +33,11 @@ mpiexec -n $2 python main.py \
     --p_lr=3e-4 \
     --no-with_scheduler \
     --d_lr=3e-4 \
-    --clip_norm=5. \
+    --clip_norm=.5 \
     --no-state_only \
     --minimax_only \
     --gamma=0.99 \
-    --gae_lambda=0.98 \
+    --gae_lambda=0.95 \
     --eps=0.2 \
     --p_ent_reg_scale=0. \
     --d_ent_reg_scale=0. \

@@ -131,7 +131,7 @@ class GAILAgent(object):
                 value_loss_b = (v - return_).pow(2)
                 value_loss = torch.max(value_loss_a, value_loss_b).mean()
                 # Aggregated loss
-                p_loss = clip_loss + entropy_loss + (0.1 * value_loss)
+                p_loss = clip_loss + entropy_loss + (0.5 * value_loss)
 
                 # Update parameters
                 self.p_optimizer.zero_grad()

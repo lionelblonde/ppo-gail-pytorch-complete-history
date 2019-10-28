@@ -183,8 +183,8 @@ class ShallowMLP(nn.Module):
     def forward(self, ob):
         plop = ob
         # Stack fully-connected layers
-        plop = torch.relu(self.ln_1(self.fc_1(plop)))
-        plop = torch.relu(self.ln_2(self.fc_2(plop)))
+        plop = torch.tanh(self.ln_1(self.fc_1(plop)))
+        plop = torch.tanh(self.ln_2(self.fc_2(plop)))
         return plop
 
 

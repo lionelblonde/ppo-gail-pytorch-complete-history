@@ -31,8 +31,8 @@ mpiexec -n $2 python main.py \
     --with_layernorm \
     --p_lr=3e-4 \
     --no-with_scheduler \
-    --clip_norm=5. \
-    --gamma=0.995 \
+    --clip_norm=.5 \
+    --gamma=0.99 \
     --gae_lambda=0.95 \
     --eps=0.2 \
     --p_ent_reg_scale=0.

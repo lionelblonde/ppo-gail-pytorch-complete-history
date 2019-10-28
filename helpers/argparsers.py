@@ -50,7 +50,7 @@ def argparser(description="PPO/GAIL Experiment"):
     boolean_flag(parser, 'with_layernorm', default=False)
     parser.add_argument('--optim_epochs_per_iter', type=int, default=10)
     parser.add_argument('--gamma', help='discount factor', type=float, default=0.99)
-    parser.add_argument('--gae_lambda', type=float, default=0.98)
+    parser.add_argument('--gae_lambda', type=float, default=0.95)
     parser.add_argument('--eps', help='ppo ratio clipping value', type=float, default=0.2)
     parser.add_argument('--clip_norm', type=float, default=None)
     boolean_flag(parser, 'state_only', default=False)
