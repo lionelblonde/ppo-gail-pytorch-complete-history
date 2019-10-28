@@ -43,9 +43,11 @@ class GAILAgent(object):
         self.p_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.hps.p_lr)
         self.d_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=self.hps.d_lr)
 
-        # Set up the learning rate schedule
-        lr_lambda = lambda t: max(2e-5 / self.hps.p_lr, 1. - (float(t) / 1e6))
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.p_optimizer, lr_lambda)
+        if self.hps.with_scheduler:
+            # Set up the learning rate schedule
+            # lr_lambda = lambda t: max(2e-5 / self.hps.p_lr, 1. - (float(t) / 1e6))
+            lr_lambda = lambda t: 1.
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
         log_module_info(logger, 'policy(+value)', self.policy)
         log_module_info(logger, 'discriminator', self.discriminator)

@@ -10,9 +10,9 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--uuid', type=str, default=None)
     boolean_flag(parser, 'cuda', default=False)
     boolean_flag(parser, 'pixels', default=False)
+    boolean_flag(parser, 'recurrent', default=False)
     parser.add_argument('--feat_x_p', type=str, default=None)
     parser.add_argument('--feat_x_v', type=str, default=None)
-    boolean_flag(parser, 'verbose_eval', default=False)
     parser.add_argument('--env_id', help='environment identifier', default='Hopper-v2')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--checkpoint_dir', type=str, help='directory to save the models',
@@ -44,6 +44,7 @@ def argparser(description="PPO/GAIL Experiment"):
                         type=int, default=None)
     parser.add_argument('--model_path', type=str, default=None)
     parser.add_argument('--p_lr', type=float, default=3e-4)
+    boolean_flag(parser, 'with_scheduler', default=False)
     parser.add_argument('--d_lr', type=float, default=3e-4)
     parser.add_argument('--hidden_state_size', type=int, default=None)
     boolean_flag(parser, 'with_layernorm', default=False)

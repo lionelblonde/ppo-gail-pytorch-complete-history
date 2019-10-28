@@ -30,7 +30,7 @@ class PPOAgent(object):
 
         self.device = device
         self.hps = hps
-        self.is_recurrent = self.hps.hidden_state_size is not None
+        self.is_recurrent = self.hps.recurrent
 
         # Create nets
         Policy = ((MLPCatPolicy if self.is_disc else MLPGaussPolicy)
@@ -42,8 +42,11 @@ class PPOAgent(object):
         # Set up the optimizer
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.hps.p_lr)
 
-        # Set up the learning rate schedule
-        lr_lambda = lambda t: max(2e-5 / self.hps.p_lr, 1. - (float(t) / 1e6))
+        if self.hps.with_scheduler:
+            # Set up the learning rate schedule
+            lr_lambda = lambda t: max(2e-5 / self.hps.p_lr, 1. - (float(t) / 1e6))
+        else:
+            lr_lambda = lambda t: 1.
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
         log_module_info(logger, 'policy(+value)', self.policy)

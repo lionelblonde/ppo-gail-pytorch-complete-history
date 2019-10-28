@@ -323,7 +323,7 @@ def learn(args,
 
         with timed("training"):
 
-            train = agent.train_recurrent if args.hidden_state_size is not None else agent.train
+            train = agent.train_recurrent if agent.is_recurrent else agent.train
 
             # Train the policy and value
             losses, gradnorm = train(rollout, timesteps_so_far=iters_so_far * rollout_len)
@@ -356,30 +356,6 @@ def learn(args,
                         deques.eval_v.extend(eval_ep['vs'])
                         deques.eval_len.append(eval_ep['ep_len'])
                         deques.eval_env_ret.append(eval_ep['ep_env_ret'])
-
-                    # When using pixels, create a video with the last eval loop
-                    if hasattr(env, 'grayscale') and args.verbose_eval:
-                        # Unstack the frames if stacked, while leaving colors unaltered
-                        frames = np.split(eval_ep['obs'],
-                                          env.k if hasattr(env, 'k') else 1,
-                                          axis=-1)
-                        frames = np.concatenate(np.array(frames), axis=0)
-                        frames = [np.squeeze(a, axis=0)
-                                  for a in np.split(frames, frames.shape[0], axis=0)]
-                        # Create OpenCV video writer
-                        writer = cv2.VideoWriter(filename='__eval__.mp4',
-                                                 fourcc=cv2.VideoWriter_fourcc(*'mp4v'),
-                                                 fps=25,
-                                                 frameSize=(env.width, env.height),
-                                                 isColor=(False
-                                                          if (hasattr(env, 'grayscale') and
-                                                              env.grayscale)
-                                                          else True))
-                        for frame in frames:
-                            # Add frame to video
-                            writer.write(frame)
-                        writer.release()
-                        cv2.destroyAllWindows()
 
         # Log statistics
 
@@ -447,12 +423,6 @@ def learn(args,
                          win=vizwins.eval_env_ret,
                          update='append',
                          opts=dict(title='Eval Episodic Return'))
-
-                # When using pixels, send eval frames
-                if hasattr(env, 'grayscale') and args.verbose_eval:
-                    viz.images(np.array(frames).transpose(0, 3, 1, 2),
-                               win=vizwins.eval_frames,
-                               opts=dict(title='Last Eval Episode'))
 
             viz.line(X=[iters_so_far],
                      Y=[np.mean(deques.policy_losses)],

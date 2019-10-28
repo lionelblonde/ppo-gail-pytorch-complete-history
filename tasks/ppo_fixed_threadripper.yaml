@@ -19,6 +19,7 @@ parameters:
   algo: 'ppo'
   cuda: false
   pixels: false
+  recurrent: false
   num_seeds: 3
   benchmark: 'mujoco'
   difficulty: 'normal'
@@ -38,7 +39,8 @@ parameters:
 
   # Optimization
   p_lr: 3e-4
-  clip_norm: 40.
+  with_scheduler: false
+  clip_norm: 5.
 
   # Algorithm
   rollout_len: 2048

@@ -33,7 +33,8 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'enable_visdom', 'render', 'record', 'with_layernorm',
+BOOL_ARGS = ['cuda', 'pixels', 'recurrent', 'enable_visdom',
+             'render', 'record', 'with_layernorm', 'with_scheduler',
              'state_only', 'minimax_only']
 
 # Create the list of environments from the indicated benchmark
@@ -123,6 +124,7 @@ def get_hps(sweep):
 
             # Optimization
             'p_lr': float(np.random.choice([1e-3, 3e-4])),
+            'with_scheduler': CONFIG['parameters']['with_scheduler'],
             'clip_norm': np.random.choice([5., 10., 20., 40.]),
 
             # Algorithm
@@ -174,7 +176,8 @@ def get_hps(sweep):
 
             # Optimization
             'p_lr': float(CONFIG['parameters'].get('p_lr', 3e-4)),
-            'clip_norm': CONFIG['parameters'].get('clip_norm', 0.5),
+            'with_scheduler': CONFIG['parameters']['with_scheduler'],
+            'clip_norm': CONFIG['parameters'].get('clip_norm', 5.0),
 
             # Algorithm
             'rollout_len': CONFIG['parameters'].get('rollout_len', 2048),

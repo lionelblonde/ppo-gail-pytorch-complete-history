@@ -5,6 +5,7 @@ cd ..
 mpiexec -n $2 python main.py \
     --no-cuda \
     --no-pixels \
+    --no-recurrent \
     --feat_x_p='shallow_mlp' \
     --feat_x_v='shallow_mlp' \
     --env_id=$1 \
@@ -30,8 +31,9 @@ mpiexec -n $2 python main.py \
     --with_layernorm \
     --d_update_ratio=1 \
     --p_lr=3e-4 \
+    --no-with_scheduler \
     --d_lr=3e-4 \
-    --clip_norm=40. \
+    --clip_norm=5. \
     --no-state_only \
     --minimax_only \
     --gamma=0.99 \
