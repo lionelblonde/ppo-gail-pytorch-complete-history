@@ -1,4 +1,5 @@
 import math
+from copy import deepcopy
 
 import torch
 import torch.nn as nn
@@ -177,9 +178,55 @@ class ShallowMLP(nn.Module):
         return plop
 
 
+class MinigridCNN(nn.Module):
+
+    def __init__(self, env, hps):
+        """CNN layer stack inspired from DQN's CNN from the Nature paper:
+        https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf
+        """
+        super(MinigridCNN, self).__init__()
+        # Calculate the number of input channels (num stacked frames X num colors)
+        in_chan = 3
+        # Create 2D-convolutional layers
+        self.conv2d_1 = nn.Conv2d(in_chan, 16, 3, 1, 1)
+        self.conv2d_2 = nn.Conv2d(16, 32, 3, 1, 1)
+        ortho_init(self.conv2d_1, 'relu', constant_bias=0.0)
+        ortho_init(self.conv2d_2, 'relu', constant_bias=0.0)
+        # Super-ghetto out size calculation
+        conv2d2fc = 7
+        for k, s, p in zip([3, 3],
+                           [1, 1],
+                           [1, 1]):
+            conv2d2fc = ((conv2d2fc - k + (2 * p)) // s) + 1
+        # Create fully-connected layer
+        self.fc_1 = nn.Linear(32 * conv2d2fc * conv2d2fc, 64)
+        ortho_init(self.fc_1, 'relu', constant_bias=0.0)
+        # Define layernorm layers
+        # Note that according to the paper "Parameter Space Noise for Exploration", layer
+        # normalization should only be used for the fully-connected part of the network.
+        self.ln_1 = nn.LayerNorm(64) if hps.with_layernorm else lambda x: x
+
+    def forward(self, ob):
+        # Normalize the observations
+        plop = ob / 255.
+        # Swap from NHWC to NCHW
+        plop = plop.permute(0, 3, 1, 2)
+        # Stack the convolutional layers
+        plop = F.relu(self.conv2d_1(plop))
+        plop = F.relu(self.conv2d_2(plop))
+        # Flatten the feature maps into a vector
+        plop = plop.view(plop.size(0), -1)
+        # Stack the fully-connected layers
+        plop = F.relu(self.ln_1(self.fc_1(plop)))
+        # Return the resulting embedding
+        return plop
+
+
 def parser_x(x):
     if x == 'shallow_mlp':
         return (lambda u, v: ShallowMLP(u, v, hidden_size=64)), 64
+    elif x == 'minigrid_cnn':
+        return (lambda u, v: MinigridCNN(u, v)), 64
     else:
         raise NotImplementedError("invalid feature extractor")
 
@@ -193,7 +240,7 @@ class MLPGaussPolicy(nn.Module):
         ac_dim = env.action_space.shape[0]
 
         # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.feat_x_p)
+        net_lambda, fc_in = parser_x(hps.extractor)
         self.net_x = net_lambda(env, hps)
 
         # Create last fully-connected layers
@@ -268,7 +315,7 @@ class LSTMGaussPolicy(nn.Module):
         ac_dim = env.action_space.shape[0]
 
         # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.feat_x_p)
+        net_lambda, fc_in = parser_x(hps.extractor)
         self.net_x = net_lambda(env, hps)
 
         # Define reccurent layer
@@ -351,7 +398,7 @@ class MLPCatPolicy(nn.Module):
         ac_dim = env.action_space.n
 
         # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.feat_x_p)
+        net_lambda, fc_in = parser_x(hps.extractor)
         self.net_x = net_lambda(env, hps)
 
         # Create last fully-connected layers
@@ -425,7 +472,7 @@ class LSTMCatPolicy(nn.Module):
         ac_dim = env.action_space.n
 
         # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.feat_x_p)
+        net_lambda, fc_in = parser_x(hps.extractor)
         self.net_x = net_lambda(env, hps)
 
         # Define reccurent layer

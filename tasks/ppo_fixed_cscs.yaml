@@ -33,8 +33,7 @@ parameters:
   eval_frequency: 10
 
   # Model
-  feat_x_p: 'shallow_mlp'
-  feat_x_v: 'shallow_mlp'
+  extractor: 'shallow_mlp'
   with_layernorm: true
 
   # Optimization

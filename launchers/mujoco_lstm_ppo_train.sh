@@ -6,8 +6,7 @@ mpiexec -n $2 python main.py \
     --no-cuda \
     --no-pixels \
     --recurrent \
-    --feat_x_p='shallow_mlp' \
-    --feat_x_v='shallow_mlp' \
+    --extractor='shallow_mlp' \
     --env_id=$1 \
     --seed=$3 \
     --checkpoint_dir="data/checkpoints" \

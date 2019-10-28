@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Example: ./mujoco_ppo_train.sh <env_id> <num_learners> <seed> <visdom_server> <visdom_port> <visdom_username> <visdom_password>
+# Example: ./minigrid_ppo_train.sh <env_id> <num_learners> <seed> <visdom_server> <visdom_port> <visdom_username> <visdom_password>
 cd ..
 
 mpiexec -n $2 python main.py \
     --no-cuda \
-    --no-pixels \
+    --pixels \
     --no-recurrent \
-    --extractor='shallow_mlp' \
+    --extractor='minigrid_cnn' \
     --env_id=$1 \
     --seed=$3 \
     --checkpoint_dir="data/checkpoints" \
@@ -22,7 +22,7 @@ mpiexec -n $2 python main.py \
     --save_frequency=100 \
     --num_iters=10000000 \
     --optim_epochs_per_iter=10 \
-    --eval_steps_per_iter=10 \
+    --eval_steps_per_iter=1 \
     --eval_frequency=1 \
     --no-render \
     --rollout_len=2048 \

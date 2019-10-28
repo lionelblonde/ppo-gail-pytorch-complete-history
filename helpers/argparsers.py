@@ -11,8 +11,7 @@ def argparser(description="PPO/GAIL Experiment"):
     boolean_flag(parser, 'cuda', default=False)
     boolean_flag(parser, 'pixels', default=False)
     boolean_flag(parser, 'recurrent', default=False)
-    parser.add_argument('--feat_x_p', type=str, default=None)
-    parser.add_argument('--feat_x_v', type=str, default=None)
+    parser.add_argument('--extractor', type=str, default=None)
     parser.add_argument('--env_id', help='environment identifier', default='Hopper-v2')
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--checkpoint_dir', type=str, help='directory to save the models',
