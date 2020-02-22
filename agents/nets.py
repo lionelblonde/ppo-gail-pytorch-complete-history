@@ -1,80 +1,108 @@
 import math
 from copy import deepcopy
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
-import torch.nn.modules.rnn as rnn
 import torch.nn.functional as F
 import torch.nn.utils as U
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
 
-def ortho_init(module, nonlinearity=None, weight_scale=1.0, constant_bias=0.0):
-    """Applies orthogonal initialization for the parameters of a given module"""
-
-    if nonlinearity is not None:
-        gain = nn.init.calculate_gain(nonlinearity)
-    else:
-        gain = weight_scale
-
-    nn.init.orthogonal_(module.weight, gain=gain)
-    if module.bias is not None:
-        nn.init.constant_(module.bias, constant_bias)
+def nhwc_to_nchw(x):
+    """Permute dimensions to go from NHWC to NCHW format"""
+    return x.permute(0, 3, 1, 2)
 
 
-class LSTM(nn.Module):
+def nchw_to_nhwc(x):
+    """Permute dimensions to go from NCHW to NHWC format"""
+    return x.permute(0, 2, 3, 1)
 
-    def __init__(self, input_size, hidden_state_size, hps):
-        """LSTM implementation, Hochreiter & Schmidhuber 1997
-        https://www.bioinf.jku.at/publications/older/2604.pdf
-        Optional add-on: layer normalization
+
+def conv_to_fc(x, in_width, in_height):
+    assert(isinstance(x, nn.Sequential) or
+           isinstance(x, nn.Module))
+    specs = [[list(i) for i in [mod.kernel_size,
+              mod.stride,
+              mod.padding]]
+             for mod in x.modules()
+             if isinstance(mod, nn.Conv2d)]
+    acc = [deepcopy(in_width),
+           deepcopy(in_height)]
+    for e in specs:
+        for i, (k, s, p) in enumerate(zip(*e)):
+            acc[i] = ((acc[i] - k + (2 * p)) // s) + 1
+    return acc[0] * acc[1]
+
+
+def init(nonlin=None, param=None,
+         weight_scale=1., constant_bias=0.):
+    """Perform orthogonal initialization"""
+
+    def _init(m):
+
+        if (isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear)):
+            scale = (nn.init.calculate_gain(nonlin, param)
+                     if nonlin is not None
+                     else weight_scale)
+            nn.init.orthogonal_(m.weight, gain=scale)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, constant_bias)
+        elif (isinstance(m, nn.BatchNorm2d) or
+              isinstance(m, nn.LayerNorm)):
+            nn.init.ones_(m.weight)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    return _init
+
+
+class ResBlock(nn.Module):
+
+    def __init__(self, chan):
+        """Residual block from the IMPALA paper ("bottleneck block" from ResNet)
+        (https://arxiv.org/abs/1802.01561)
         """
-        super(LSTM, self).__init__()
-        self.hps = hps
-        # Create layers for the two types of products there are in lstm's gate equations
-        # namely W * x and W * h. We create only two and leave a separate piece of it for each gate
-        self.xh = nn.Linear(input_size, 4 * hidden_state_size)
-        self.hh = nn.Linear(hidden_state_size, 4 * hidden_state_size)
-        ortho_init(self.xh, 'tanh', constant_bias=0.0)
-        ortho_init(self.hh, 'tanh', constant_bias=0.0)
+        super(ResBlock, self).__init__()
+        # Assemble the impala residual block
+        self.residual_block = nn.Sequential(OrderedDict([
+            ('pre_conv2d_block_1', nn.Sequential(OrderedDict([  # preactivated
+                ('nl', nn.ReLU()),
+                ('conv2d', nn.Conv2d(chan, chan, kernel_size=3, stride=1, padding=1)),
+            ]))),
+            ('pre_conv2d_block_2', nn.Sequential(OrderedDict([  # preactivated
+                ('nl', nn.ReLU()),
+                ('conv2d', nn.Conv2d(chan, chan, kernel_size=3, stride=1, padding=1)),
+            ]))),
+        ]))
+        self.skip_co = nn.Sequential()  # insert activation, downsampling, etc. if needed
+        # Perform initialization
+        self.residual_block.apply(init(nonlin='relu', param=None))
 
-        # Define layernorm layers
-        self.ln_x = nn.LayerNorm(4 * hidden_state_size) if hps.with_layernorm else lambda x: x
-        self.ln_h = nn.LayerNorm(4 * hidden_state_size) if hps.with_layernorm else lambda x: x
-        self.ln_c = nn.LayerNorm(hidden_state_size) if hps.with_layernorm else lambda x: x
+    def forward(self, x):
+        return self.residual_block(x) + self.skip_co(x)
 
-    def forward(self, xs, masks, state):
-        # Split the input state into hidden state and cell state
-        h, c = state.chunk(2, 1)
-        # Create a list to collect the hidden states (monitoring purposes)
-        hs = []
 
-        # Go over the sequence of inputs and masks from the current hidden state
-        for t, (x, mask) in enumerate(zip(xs, masks)):
-            # Apply masks (zero out if end of episode reached)
-            h = h * (1 - mask)
-            c = c * (1 - mask)
-            # Create a matrix that contains the products present in all gate equations
-            gates = self.ln_x(self.xh(x)) + self.ln_h(self.hh(h))
-            # Split the matrix in four equal pieces so that each gate can learn its own piece
-            f_g, i_g, c_g, o_g = gates.chunk(4, 1)
-            # Apply the nonlinearities for each of the gates
-            f_g = torch.sigmoid(f_g)
-            i_g = torch.sigmoid(i_g)
-            c_g = torch.tanh(c_g)
-            o_g = torch.sigmoid(o_g)
-            # Assemble the new lstm state, namely the hidden state and the cell state
-            c = f_g * c + i_g * c_g
-            h = o_g * torch.tanh(self.ln_c(c))
+class ImpalaBlock(nn.Module):
 
-            # Add the hidden state to the list
-            hs.append(h)
+    def __init__(self, in_chan, out_chan):
+        """Meta-block from the IMPALA paper
+        https://arxiv.org/abs/1802.01561
+        """
+        super(ImpalaBlock, self).__init__()
+        self.impala_block = nn.Sequential(OrderedDict([
+            ('conv2d', nn.Conv2d(in_chan, out_chan, kernel_size=3, stride=1, padding=0)),
+            ('maxpool2d', nn.MaxPool2d(kernel_size=3, stride=2, padding=0)),
+            ('res_block_1', ResBlock(out_chan)),
+            ('res_block_2', ResBlock(out_chan)),
+        ]))
+        # Initialize the 'conv2d' layer
+        # The residual blocks have already been initialized
+        self.impala_block.conv2d.apply(init(nonlin='relu', param=None))
 
-        # Return the list of consecutive hidden state and the last lstm state (hidden and cell)
-        hc = torch.cat([h, c], dim=1)
-        # Return the list of hidden state and the LSTM state (hidden + cell)
-        return torch.stack(hs), hc
+    def forward(self, x):
+        return self.impala_block(x)
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Distributional toolkits.
@@ -157,7 +185,7 @@ class CatToolkit(object):
         return kl
 
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Feature extractors.
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Perception stacks.
 
 class ShallowMLP(nn.Module):
 
@@ -165,256 +193,362 @@ class ShallowMLP(nn.Module):
         """MLP layer stack as usually used in Deep RL"""
         super(ShallowMLP, self).__init__()
         ob_dim = env.observation_space.shape[0]
-        # Create fully-connected layers
-        self.fc = nn.Linear(ob_dim, hidden_size)
-        ortho_init(self.fc, nonlinearity='relu', constant_bias=0.0)
-        # Define layernorm layers
-        self.ln = nn.LayerNorm(hidden_size) if hps.with_layernorm else lambda x: x
+        # Assemble fully-connected encoder
+        self.encoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(ob_dim, hidden_size)),
+                ('ln', nn.LayerNorm(hidden_size)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Perform initialization
+        self.encoder.apply(init(nonlin='relu', param=None))
 
-    def forward(self, ob):
-        plop = ob
-        # Stack fully-connected layers
-        plop = F.relu(self.ln(self.fc(plop)))
-        return plop
+    def forward(self, x):
+        return self.encoder(x)
 
 
-class MinigridCNN(nn.Module):
+class TeenyTinyCNN(nn.Module):
+
+    def __init__(self, env, hps):
+        super(TeenyTinyCNN, self).__init__()
+        in_width, in_height, in_chan = env.observation_space.shape
+        # Assemble the convolutional encoder
+        self.encoder = nn.Sequential(OrderedDict([
+            ('conv2d_block_1', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(in_chan, 16, kernel_size=4, stride=2, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+            ('conv2d_block_2', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Assemble the fully-connected decoder
+        self.decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(32 * conv_to_fc(self.encoder, in_width, in_height), 64)),
+                ('ln', nn.LayerNorm(64)),
+                # According to the paper "Parameter Space Noise for Exploration", layer
+                # normalization should only be used for the fully-connected part of the network.
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Perform initialization
+        self.encoder.apply(init(nonlin='relu', param=None))
+        self.decoder.apply(init(nonlin='relu', param=None))
+
+    def forward(self, x):
+        # Normalize the observations
+        x /= 255.
+        # Swap from NHWC to NCHW
+        x = nhwc_to_nchw(x)
+        # Stack the convolutional layers
+        x = self.encoder(x)
+        # Flatten the feature maps into a vector
+        x = x.view(x.size(0), -1)
+        # Stack the fully-connected layers
+        x = self.decoder(x)
+        # Return the resulting embedding
+        return x
+
+
+class NatureCNN(nn.Module):
 
     def __init__(self, env, hps):
         """CNN layer stack inspired from DQN's CNN from the Nature paper:
         https://storage.googleapis.com/deepmind-data/assets/papers/DeepMindNature14236Paper.pdf
         """
-        super(MinigridCNN, self).__init__()
-        # Calculate the number of input channels (num stacked frames X num colors)
-        in_chan = 3
-        # Create 2D-convolutional layers
-        self.conv2d_1 = nn.Conv2d(in_chan, 16, 3, 1, 1)
-        self.conv2d_2 = nn.Conv2d(16, 32, 3, 1, 1)
-        ortho_init(self.conv2d_1, 'relu', constant_bias=0.0)
-        ortho_init(self.conv2d_2, 'relu', constant_bias=0.0)
-        # Super-ghetto out size calculation
-        conv2d2fc = 7
-        for k, s, p in zip([3, 3],
-                           [1, 1],
-                           [1, 1]):
-            conv2d2fc = ((conv2d2fc - k + (2 * p)) // s) + 1
-        # Create fully-connected layer
-        self.fc_1 = nn.Linear(32 * conv2d2fc * conv2d2fc, 64)
-        ortho_init(self.fc_1, 'relu', constant_bias=0.0)
-        # Define layernorm layers
-        # Note that according to the paper "Parameter Space Noise for Exploration", layer
-        # normalization should only be used for the fully-connected part of the network.
-        self.ln_1 = nn.LayerNorm(64) if hps.with_layernorm else lambda x: x
+        super(NatureCNN, self).__init__()
+        in_width, in_height, in_chan = env.observation_space.shape
+        # Assemble the convolutional encoder
+        self.encoder = nn.Sequential(OrderedDict([
+            ('conv2d_block_1', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(in_chan, 16, kernel_size=8, stride=4, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+            ('conv2d_block_2', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+            ('conv2d_block_3', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Assemble the fully-connected decoder
+        self.decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(64 * conv_to_fc(self.encoder, in_width, in_height), 512)),
+                ('ln', nn.LayerNorm(512)),
+                # According to the paper "Parameter Space Noise for Exploration", layer
+                # normalization should only be used for the fully-connected part of the network.
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Perform initialization
+        self.encoder.apply(init(nonlin='relu', param=None))
+        self.decoder.apply(init(nonlin='relu', param=None))
 
-    def forward(self, ob):
+    def forward(self, x):
         # Normalize the observations
-        plop = ob / 255.
+        x /= 255.
         # Swap from NHWC to NCHW
-        plop = plop.permute(0, 3, 1, 2)
+        x = nhwc_to_nchw(x)
         # Stack the convolutional layers
-        plop = F.relu(self.conv2d_1(plop))
-        plop = F.relu(self.conv2d_2(plop))
+        x = self.encoder(x)
         # Flatten the feature maps into a vector
-        plop = plop.view(plop.size(0), -1)
+        x = x.view(x.size(0), -1)
         # Stack the fully-connected layers
-        plop = F.relu(self.ln_1(self.fc_1(plop)))
+        x = self.decoder(x)
         # Return the resulting embedding
-        return plop
+        return x
 
 
-def parser_x(x):
+class SmallImpalaCNN(nn.Module):
+
+    def __init__(self, env, hps):
+        """CNN layer stack inspired from IMPALA's "small" CNN (2 convolutional layers)
+        https://arxiv.org/abs/1802.01561
+        Note that we do not use the last LSTM of the described architecture.
+        """
+        super(SmallImpalaCNN, self).__init__()
+        in_width, in_height, in_chan = env.observation_space.shape
+        # Assemble the convolutional encoder
+        self.encoder = nn.Sequential(OrderedDict([
+            ('conv2d_block_1', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(in_chan, 16, kernel_size=8, stride=4, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+            ('conv2d_block_2', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Assemble the fully-connected decoder
+        self.decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(32 * conv_to_fc(self.encoder, in_width, in_height), 256)),
+                ('ln', nn.LayerNorm(256)),
+                # According to the paper "Parameter Space Noise for Exploration", layer
+                # normalization should only be used for the fully-connected part of the network.
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Perform initialization
+        self.encoder.apply(init(nonlin='relu', param=None))
+        self.decoder.apply(init(nonlin='relu', param=None))
+
+    def forward(self, x):
+        # Normalize the observations
+        x /= 255.
+        # Swap from NHWC to NCHW
+        x = nhwc_to_nchw(x)
+        # Stack the convolutional layers
+        x = self.encoder(x)
+        # Flatten the feature maps into a vector
+        x = x.view(x.size(0), -1)
+        # Stack the fully-connected layers
+        x = self.decoder(x)
+        # Return the resulting embedding
+        return x
+
+
+class LargeImpalaCNN(nn.Module):
+
+    def __init__(self, env, hps):
+        """CNN layer stack inspired from IMPALA's "large" CNN (15 convolutional layers)
+        https://arxiv.org/abs/1802.01561
+        Note that we do not use the last LSTM of the described architecture.
+        """
+        super(LargeImpalaCNN, self).__init__()
+        in_width, in_height, in_chan = env.observation_space.shape
+        # Assemble the convolutional encoder
+        self.encoder = nn.Sequential(OrderedDict([
+            ('impala_block_1', ImpalaBlock(in_chan, 16)),
+            ('impala_block_2', ImpalaBlock(16, 32)),
+            ('impala_block_3', ImpalaBlock(32, 32)),
+            ('nl', nn.ReLU()),
+        ]))
+        # Assemble the fully-connected decoder
+        self.decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(32 * conv_to_fc(self.encoder, in_width, in_height), 256)),
+                ('ln', nn.LayerNorm(256)),
+                # According to the paper "Parameter Space Noise for Exploration", layer
+                # normalization should only be used for the fully-connected part of the network.
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Perform initialization
+        # Encoder already initialized at this point.
+        self.decoder.apply(init(nonlin='relu', param=None))
+
+    def forward(self, x):
+        # Normalize the observations
+        x /= 255.
+        # Swap from NHWC to NCHW
+        x = nhwc_to_nchw(x)
+        # Stack the convolutional layers
+        x = self.encoder(x)
+        # Flatten the feature maps into a vector
+        x = x.view(x.size(0), -1)
+        # Stack the fully-connected layers
+        x = self.decoder(x)
+        # Return the resulting embedding
+        return x
+
+
+def perception_stack_parser(x):
     if x == 'shallow_mlp':
-        return (lambda u, v: ShallowMLP(u, v, hidden_size=64)), 64
-    elif x == 'minigrid_cnn':
-        return (lambda u, v: MinigridCNN(u, v)), 64
+        return (lambda u, v: ShallowMLP(u, v, hidden_size=100)), 100
+    elif x == 'teeny_tiny_cnn':
+        return (lambda u, v: TeenyTinyCNN(u, v)), 64
+    elif x == 'nature_cnn':
+        return (lambda u, v: NatureCNN(u, v)), 512
+    elif x == 'small_impala_cnn':
+        return (lambda u, v: SmallImpalaCNN(u, v)), 256
+    elif x == 'large_impala_cnn':
+        return (lambda u, v: LargeImpalaCNN(u, v)), 256
     else:
-        raise NotImplementedError("invalid feature extractor")
+        raise NotImplementedError("invalid perception stack")
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Networks.
 
-class MLPGaussPolicy(nn.Module):
+class GaussPolicy(nn.Module):
 
     def __init__(self, env, hps):
-        super(MLPGaussPolicy, self).__init__()
+        super(GaussPolicy, self).__init__()
         ac_dim = env.action_space.shape[0]
-
-        # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.extractor)
-        self.net_x = net_lambda(env, hps)
-
-        # Create last fully-connected layers
-        self.fc_last_p = nn.Linear(fc_in, fc_in)
-        self.fc_last_v = nn.Linear(fc_in, fc_in)
-        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
-        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
-        # Define layernorm layers
-        self.ln_last_p = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
-        self.ln_last_v = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
-
-        # Define output heads
-        self.ac_mean_head = nn.Linear(fc_in, ac_dim)
-        ortho_init(self.ac_mean_head, weight_scale=0.01, constant_bias=0.0)
+        self.hps = hps
+        # Define perception stack
+        net_lambda, fc_in = perception_stack_parser(self.hps.perception_stack)
+        self.perception_stack = net_lambda(env, self.hps)
+        # Assemble the last layers and output heads
+        self.p_decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(fc_in, fc_in)),
+                ('ln', nn.LayerNorm(fc_in)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        self.p_head = nn.Linear(fc_in, ac_dim)
         self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
-        self.value_head = nn.Linear(fc_in, 1)
-        ortho_init(self.value_head, nonlinearity='linear', constant_bias=0.0)
+        self.v_decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(fc_in, fc_in)),
+                ('ln', nn.LayerNorm(fc_in)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        self.v_head = nn.Linear(fc_in, 1)
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+            self.r_decoder = nn.Sequential(OrderedDict([
+                ('fc_block', nn.Sequential(OrderedDict([
+                    ('fc', nn.Linear(fc_in, fc_in)),
+                    ('ln', nn.LayerNorm(fc_in)),
+                    ('nl', nn.ReLU()),
+                ]))),
+            ]))
+            self.r_head = nn.Linear(fc_in, 3 if self.hps.binned_aux_loss else 1)  # bins
+        # Perform initialization
+        self.p_decoder.apply(init(nonlin='relu', param=None))
+        self.p_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.v_decoder.apply(init(nonlin='relu', param=None))
+        self.v_head.apply(init(nonlin='linear', param=None))
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+            self.r_decoder.apply(init(nonlin='relu', param=None))
+            self.r_head.apply(init(nonlin='linear', param=None))
 
     def logp(self, ob, ac):
-        ac_mean, ac_std, _ = self.forward(ob)
-        return NormalToolkit.logp(ac, ac_mean, ac_std)
+        out = self.forward(ob)
+        return NormalToolkit.logp(ac, *out[0:2])  # mean, std
 
     def entropy(self, ob):
-        _, ac_std, _ = self.forward(ob)
-        return NormalToolkit.entropy(ac_std)
+        out = self.forward(ob)
+        return NormalToolkit.entropy(out[1])  # std
 
     def sample(self, ob):
         with torch.no_grad():
-            ac_mean, ac_std, _ = self.forward(ob)
-            ac = NormalToolkit.sample(ac_mean, ac_std)
+            out = self.forward(ob)
+            ac = NormalToolkit.sample(*out[0:2])  # mean, std
         return ac
 
     def mode(self, ob):
         with torch.no_grad():
-            ac_mean, _, _ = self.forward(ob)
-            ac = NormalToolkit.mode(ac_mean)
+            out = self.forward(ob)
+            ac = NormalToolkit.mode(out[0])  # mean
         return ac
 
     def kl(self, ob, other):
         assert isinstance(other, GaussPolicy)
         with torch.no_grad():
-            ac_mean, ac_logstd, _ = self.forward(ob)
-            ac_mean_, ac_logstd_, _ = other.forward(ob)
-            kl = NormalToolkit.kl(ac_mean, ac_logstd,
-                                  ac_mean_, ac_logstd_)
+            out_a = self.forward(ob)
+            out_b = other.forward(ob)
+            kl = NormalToolkit.kl(*out_a[0:2],
+                                  *out_b[0:2])  # mean, std
         return kl
 
     def value(self, ob):
-        _, _, v = self.forward(ob)
-        return v
+        out = self.forward(ob)
+        return out[2]  # value
+
+    def ss_aux_loss(self, ob):
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+            out = self.forward(ob)
+            return out[3]  # aux
+        else:
+            raise ValueError("should not be called")
 
     def forward(self, ob):
-        plop = ob
-        # Pipe through the feature extractor
-        plop = self.net_x(plop)
+        # Extract features
+        x = self.perception_stack(ob)
         # Go through residual fully-connected layers specific for each head
         # inspired from OpenAI's RND repo, file located at
         # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
-        feat_fc_last_p = plop + F.relu(self.ln_last_p(self.fc_last_p(plop)))
-        feat_fc_last_v = plop + F.relu(self.ln_last_v(self.fc_last_v(plop)))
-        # Go through the output heads
-        ac_mean = self.ac_mean_head(feat_fc_last_p)
+        ac_mean = self.p_head(self.p_decoder(x))
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
-        value = self.value_head(feat_fc_last_v)
-        return ac_mean, ac_std, value
+        value = self.v_head(self.v_decoder(x))
+        out = [ac_mean, ac_std, value]
+        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+            aux = self.r_head(self.r_decoder(x))
+            if self.hps.binned_aux_loss:
+                aux = F.log_softmax(aux, dim=1).exp()
+            out.append(out)
+        return out
 
 
-class LSTMGaussPolicy(nn.Module):
+class CatPolicy(nn.Module):
 
     def __init__(self, env, hps):
-        super(LSTMGaussPolicy, self).__init__()
-        ac_dim = env.action_space.shape[0]
-
-        # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.extractor)
-        self.net_x = net_lambda(env, hps)
-
-        # Define reccurent layer
-        self.lstm = LSTM(fc_in, hps.hidden_state_size, hps)
-
-        # Create last fully-connected layers
-        self.fc_last_p = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
-        self.fc_last_v = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
-        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
-        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
-        # Define layernorm layers
-        self.ln_last_p = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
-        self.ln_last_v = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
-
-        # Define output heads
-        self.ac_mean_head = nn.Linear(hps.hidden_state_size, ac_dim)
-        ortho_init(self.ac_mean_head, weight_scale=0.01, constant_bias=0.0)
-        self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
-        self.value_head = nn.Linear(hps.hidden_state_size, 1)
-        ortho_init(self.value_head, nonlinearity='linear', constant_bias=0.0)
-
-    def logp(self, ob, ac, done, state):
-        ac_mean, ac_std, _, _ = self.forward(ob, done, state)
-        return NormalToolkit.logp(ac, ac_mean, ac_std)
-
-    def entropy(self, ob, done, state):
-        _, ac_std, _, _ = self.forward(ob, done, state)
-        return NormalToolkit.entropy(ac_std)
-
-    def sample(self, ob, done, state):
-        # Reparameterization trick
-        with torch.no_grad():
-            ac_mean, ac_std, state, _ = self.forward(ob, done, state)
-            ac = NormalToolkit.sample(ac_mean, ac_std)
-        return ac, state
-
-    def mode(self, ob, done, state):
-        with torch.no_grad():
-            ac_mean, _, state, _ = self.forward(ob, done, state)
-            ac = NormalToolkit.mode(ac_mean)
-        return ac, state
-
-    def kl(self, ob, done, state, other):
-        assert isinstance(other, LSTMGaussPolicy)
-        with torch.no_grad():
-            ac_mean, ac_logstd, _, _ = self.forward(ob, done, state)
-            ac_mean_, ac_logstd_, _, _ = other.forward(ob, done, state)
-            kl = NormalToolkit.kl(ac_mean, ac_logstd,
-                                  ac_mean_, ac_logstd_)
-        return kl
-
-    def value(self, ob, done, state):
-        _, _, _, v = self.forward(ob, done, state)
-        return v
-
-    def forward(self, ob, done, state):
-        plop = ob
-        # Pipe through the feature extractor
-        plop = self.net_x(plop)
-        # Add LSTM
-        _, hc = self.lstm(plop, done, state)
-        h, _ = hc.chunk(2, 1)
-        # Go through residual fully-connected layers specific for each head
-        # inspired from OpenAI's RND repo, file located at
-        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
-        feat_fc_last_p = h + F.relu(self.ln_last_p(self.fc_last_p(h)))
-        feat_fc_last_v = h + F.relu(self.ln_last_v(self.fc_last_v(h)))
-        # Go through the output heads
-        ac_mean = self.ac_mean_head(feat_fc_last_p)
-        ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
-        value = self.value_head(feat_fc_last_v)
-        return ac_mean, ac_std, hc, value
-
-
-class MLPCatPolicy(nn.Module):
-
-    def __init__(self, env, hps):
-        super(MLPCatPolicy, self).__init__()
-        ob_dim = env.observation_space.shape[0]
+        super(CatPolicy, self).__init__()
         ac_dim = env.action_space.n
-
-        # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.extractor)
-        self.net_x = net_lambda(env, hps)
-
-        # Create last fully-connected layers
-        self.fc_last_p = nn.Linear(fc_in, fc_in)
-        self.fc_last_v = nn.Linear(fc_in, fc_in)
-        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
-        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
-        # Define layernorm layers
-        self.ln_last_p = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
-        self.ln_last_v = nn.LayerNorm(fc_in) if hps.with_layernorm else lambda x: x
-
-        # Define output layer
-        self.ac_logits_head = nn.Linear(fc_in, ac_dim)
-        ortho_init(self.ac_logits_head, weight_scale=0.01, constant_bias=0.0)
-        self.value_head = nn.Linear(fc_in, 1)
-        ortho_init(self.value_head, nonlinearity='linear', constant_bias=0.0)
+        # Define perception stack
+        net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
+        self.perception_stack = net_lambda(env, hps)
+        # Assemble the last layers and output heads
+        self.p_decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(fc_in, fc_in)),
+                ('ln', nn.LayerNorm(fc_in)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        self.p_head = nn.Linear(fc_in, ac_dim)
+        self.v_decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(fc_in, fc_in)),
+                ('ln', nn.LayerNorm(fc_in)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        self.v_head = nn.Linear(fc_in, 1)
+        # Perform initialization
+        self.p_decoder.apply(init(nonlin='relu', param=None))
+        self.p_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.v_decoder.apply(init(nonlin='relu', param=None))
+        self.v_head.apply(init(nonlin='linear', param=None))
 
     def logp(self, ob, ac):
         ac_logits, _ = self.forward(ob)
@@ -450,163 +584,47 @@ class MLPCatPolicy(nn.Module):
         return v
 
     def forward(self, ob):
-        plop = ob
-        # Pipe through the feature extractor
-        plop = self.net_x(plop)
+        # Extract features
+        x = self.perception_stack(ob)
         # Go through residual fully-connected layers specific for each head
         # inspired from OpenAI's RND repo, file located at
         # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
-        feat_fc_last_p = plop + F.relu(self.ln_last_p(self.fc_last_p(plop)))
-        feat_fc_last_v = plop + F.relu(self.ln_last_v(self.fc_last_v(plop)))
-        # Go through the output heads
-        ac_logits = self.ac_logits_head(feat_fc_last_p)
-        value = self.value_head(feat_fc_last_v)
+        ac_logits = self.p_head(self.p_decoder(x))
+        value = self.v_head(self.v_decoder(x))
+        # Return the heads
         return ac_logits, value
-
-
-class LSTMCatPolicy(nn.Module):
-
-    def __init__(self, env, hps):
-        super(LSTMCatPolicy, self).__init__()
-        ob_dim = env.observation_space.shape[0]
-        ac_dim = env.action_space.n
-
-        # Define feature extractor
-        net_lambda, fc_in = parser_x(hps.extractor)
-        self.net_x = net_lambda(env, hps)
-
-        # Define reccurent layer
-        self.lstm = LSTM(fc_in, hps.hidden_state_size, hps)
-
-        # Create last fully-connected layers
-        self.fc_last_p = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
-        self.fc_last_v = nn.Linear(hps.hidden_state_size, hps.hidden_state_size)
-        ortho_init(self.fc_last_p, nonlinearity='relu', constant_bias=0.0)
-        ortho_init(self.fc_last_v, nonlinearity='relu', constant_bias=0.0)
-        # Define layernorm layers
-        self.ln_last_p = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
-        self.ln_last_v = nn.LayerNorm(hps.hidden_state_size) if hps.with_layernorm else lambda x: x
-
-        # Define output layer
-        self.ac_logits_head = nn.Linear(hps.hidden_state_size, ac_dim)
-        ortho_init(self.ac_logits_head, weight_scale=0.01, constant_bias=0.0)
-        self.value_head = nn.Linear(hps.hidden_state_size, 1)
-        ortho_init(self.value_head, nonlinearity='linear', constant_bias=0.0)
-
-    def logp(self, ob, ac, done, state):
-        ac_logits, _, _ = self.forward(ob, done, state)
-        return CatToolkit.logp(ac, ac_logits)
-
-    def entropy(self, ob, done, state):
-        ac_logits, _, _ = self.forward(ob, done, state)
-        return CatToolkit.entropy(ac_logits)
-
-    def sample(self, ob, done, state):
-        # Reparameterization trick
-        with torch.no_grad():
-            ac_logits, state, _ = self.forward(ob, done, state)
-            ac = CatToolkit.sample(ac_logits)
-        return ac, state
-
-    def mode(self, ob, done, state):
-        with torch.no_grad():
-            ac_logits, state, _ = self.forward(ob, done, state)
-            ac = CatToolkit.mode(ac_logits)
-        return ac, state
-
-    def kl(self, ob, done, state, other):
-        assert isinstance(other, LSTMGaussPolicy)
-        with torch.no_grad():
-            ac_logits, _, _ = self.forward(ob, done, state)
-            ac_logits_, _, _ = other.forward(ob, done, state)
-            kl = CatToolkit.kl(ac_logits, ac_logits_)
-        return kl
-
-    def value(self, ob, done, state):
-        _, _, v = self.forward(ob, done, state)
-        return v
-
-    def forward(self, ob, done, state):
-        plop = ob
-        # Pipe through the feature extractor
-        plop = self.net_x(plop)
-        # Add LSTM layers
-        _, hc = self.lstm(plop, done, state)
-        h, _ = hc.chunk(2, 1)
-        # Go through residual fully-connected layers specific for each head
-        # inspired from OpenAI's RND repo, file located at
-        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
-        feat_fc_last_p = h + F.relu(self.ln_last_p(self.fc_last_p(h)))
-        feat_fc_last_v = h + F.relu(self.ln_last_v(self.fc_last_v(h)))
-        # Go through the output heads
-        ac_logits = self.ac_logits_head(feat_fc_last_p)
-        value = self.value_head(feat_fc_last_v)
-        return ac_logits, hc, value
 
 
 class Discriminator(nn.Module):
 
     def __init__(self, env, hps):
         super(Discriminator, self).__init__()
-        self.ob_dim = env.observation_space.shape[0]
-        self.ac_dim = env.action_space.shape[0]
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
         self.hps = hps
-
-        if self.hps.state_only:
-            in_dim = self.ob_dim
-        else:
-            in_dim = self.ob_dim + self.ac_dim
-
-        # Define hidden layers
-        self.fc_1 = U.spectral_norm(nn.Linear(in_dim, 64))
-        self.fc_2 = U.spectral_norm(nn.Linear(64, 64))
-        ortho_init(self.fc_1, nonlinearity='leaky_relu', constant_bias=0.0)
-        ortho_init(self.fc_2, nonlinearity='leaky_relu', constant_bias=0.0)
-
-        # Define layernorm layers
-        self.ln_1 = nn.LayerNorm(64) if self.hps.with_layernorm else lambda x: x
-        self.ln_2 = nn.LayerNorm(64) if self.hps.with_layernorm else lambda x: x
-
-        # Define score head
-        self.score_head = nn.Linear(64, 1)
-        ortho_init(self.score_head, nonlinearity='linear', constant_bias=0.0)
-
-    def get_reward(self, ob, ac):
-        """Craft surrogate reward"""
-        ob = torch.FloatTensor(ob).cpu()
-        ac = torch.FloatTensor(ac).cpu()
-
-        # Counterpart of GAN's minimax (also called "saturating") loss
-        # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
-        # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
-        # e.g. walking simulations that get cut off when the robot falls over
-        minimax_reward = -torch.log(1. - torch.sigmoid(self.D(ob, ac).detach()) + 1e-8)
-
-        if self.hps.minimax_only:
-            return minimax_reward
-        else:
-            # Counterpart of GAN's non-saturating loss
-            # Recommended in the original GAN paper and later in (Fedus et al. 2017)
-            # Numerics: 0 for expert-like states, goes to -inf for non-expert-like states
-            # compatible with envs with traj cutoffs for good (expert-like) behavior
-            # e.g. mountain car, which gets cut off when the car reaches the destination
-            non_satur_reward = torch.log(torch.sigmoid(self.D(ob, ac).detach()))
-            # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
-            # Numerics: might be better might be way worse
-            return non_satur_reward + minimax_reward
+        self.leak = 0.1
+        # Define the input dimension, depending on whether actions are used too.
+        in_dim = ob_dim if self.hps.state_only else ob_dim + ac_dim
+        self.score_trunk = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', U.spectral_norm(nn.Linear(in_dim, 100))),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+            ]))),
+            ('fc_block_2', nn.Sequential(OrderedDict([
+                ('fc', U.spectral_norm(nn.Linear(100, 100))),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+            ]))),
+        ]))
+        self.score_head = nn.Linear(100, 1)
+        # Perform initialization
+        self.score_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.score_head.apply(init())
 
     def D(self, ob, ac):
-        if self.hps.state_only:
-            plop = ob
-        else:
-            plop = torch.cat([ob, ac], dim=-1)
-        # Add hidden layers
-        plop = F.leaky_relu(self.ln_1(self.fc_1(plop)))
-        plop = F.leaky_relu(self.ln_2(self.fc_2(plop)))
-        # Add output layer
-        score = self.score_head(plop)
-        return score
+        return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        score = self.D(ob, ac)
-        return score
+        x = ob if self.hps.state_only else torch.cat([ob, ac], dim=-1)
+        x = self.score_trunk(x)
+        score = self.score_head(x)
+        return score  # no sigmoid here

@@ -1,47 +1,33 @@
-import yaml
-
 import gym
-from gym_minigrid.wrappers import ImgObsWrapper
+from helpers.atari_wrappers import wrap_atari
 
-from helpers import logger
-from helpers.wrappers import PixelObsEnv, FrameStack
+from helpers.pycolab_envs import make_pycolab
+
+import environments
 
 
 def get_benchmark(env_id):
     """Verify that the specified env is amongst the admissible ones"""
-    envs = yaml.safe_load(open("admissible_envs.yaml"))['environments']
-    benchmark = None
-    for k, v in envs.items():
-        if env_id in list(v.keys()):
+    for k, v in environments.BENCHMARKS.items():
+        if env_id in v:
             benchmark = k
-    assert benchmark is not None, "env not found in 'project_root/admissible_envs.yml'"
-    logger.info("env_id = {} <- admissibility check passed!".format(env_id))
+            continue
+    assert benchmark is not None, "unsupported environment"
     return benchmark
 
 
-def make_mujoco_env(env_id, seed, pixels, width=84, height=84, grayscale=True, k=4):
-    env = gym.make(env_id)
-    env.seed(seed)
-    # Apply wrappers
-    if pixels:
-        env = PixelObsEnv(env, width, height, grayscale)
-        env = FrameStack(env, k)
-    return env
-
-
-def make_env_(env_id, seed):
-    env = gym.make(env_id)
-    env = ImgObsWrapper(env)
-    env.seed(seed)
-    return env
-
-
-def make_env(env_id, seed, pixels, width, height, grayscale, k):
+def make_env(env_id, seed):
     """Create an environment"""
     benchmark = get_benchmark(env_id)
+    if benchmark == 'pycolab':
+        env = make_pycolab(env_id)
+        return env
+    env = gym.make(env_id)
+    env.seed(seed)
     if benchmark == 'mujoco':
-        return make_mujoco_env(env_id, seed, pixels, width, height, grayscale, k)
-    elif benchmark in ['classic', 'minigrid']:
-        return make_env_(env_id, seed)
+        pass
+    elif benchmark == 'atari':
+        env = wrap_atari(env)
     else:
-        raise RuntimeError("unknown benchmark")
+        raise ValueError('unsupported benchmark')
+    return env

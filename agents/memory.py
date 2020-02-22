@@ -21,20 +21,16 @@ class RingBuffer(object):
     def get_batch(self, idxs):
         return self.data[(self.start + idxs) % self.maxlen]
 
-    def append(self, v, offset=0):
-        """`offset` is used to keep the demos forever in the buffer (never flushed out by FIFO)"""
-        global debug
+    def append(self, v):
         if self.length < self.maxlen:
             # We have space, simply increase the length
             self.length += 1
-            self.data[offset + (self.start + self.length - 1)
-                      % (self.maxlen - offset)] = v
+            self.data[(self.start + self.length - 1) % self.maxlen] = v
 
         elif self.length == self.maxlen:
             # No space, "remove" the first item
-            self.start = (self.start + 1) % (self.maxlen - offset)
-            self.data[offset + (self.start + self.length - offset - 1)
-                      % (self.maxlen - offset)] = v
+            self.start = (self.start + 1) % self.maxlen
+            self.data[(self.start + self.length - 1) % self.maxlen] = v
         else:
             # This should never happen
             raise RuntimeError()

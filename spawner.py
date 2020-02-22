@@ -3,8 +3,7 @@ from copy import deepcopy
 import os
 import os.path as osp
 import numpy as np
-from subprocess import call, check_output
-from copy import copy
+from subprocess import check_output
 import yaml
 
 from helpers import logger
@@ -14,48 +13,107 @@ from helpers.experiment import uuid as create_uuid
 
 parser = argparse.ArgumentParser(description="Job Spawner")
 parser.add_argument('--config', type=str, default=None)
+parser.add_argument('--envset', type=str, default=None)
+parser.add_argument('--num_demos', '--list', nargs='+', type=str, default=None)
 boolean_flag(parser, 'call', default=False, help="launch immediately?")
 boolean_flag(parser, 'sweep', default=False, help="hp search?")
-parser.add_argument('--visdom_server', type=str, default=None)
-parser.add_argument('--visdom_port', type=str, default=None)
-parser.add_argument('--visdom_username', type=str, default=None)
-parser.add_argument('--visdom_password', type=str, default=None)
 args = parser.parse_args()
 
 # Retrieve config from filesystem
 CONFIG = yaml.safe_load(open(args.config))
-# Retrieve list of admissible environments and demos
-ADM = yaml.safe_load(open("admissible_envs.yaml"))['environments']
+
 # Extract parameters from config
 NUM_SEEDS = CONFIG['parameters']['num_seeds']
+NEED_DEMOS = (CONFIG['parameters']['algo'] == 'gail')
+if NEED_DEMOS:
+    NUM_DEMOS = [int(i) for i in args.num_demos]
+else:
+    NUM_DEMOS = [0]  # arbitrary, only used for dim checking
 CLUSTER = CONFIG['resources']['cluster']
+WANDB_PROJECT = CONFIG['resources']['wandb_project'].upper() + '-' + CLUSTER.upper()
 CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'pixels', 'recurrent', 'enable_visdom',
-             'render', 'record', 'with_layernorm', 'with_scheduler',
-             'state_only', 'minimax_only']
+BOOL_ARGS = ['cuda', 'norm_obs', 'clip_obs', 'binned_aux_loss', 'squared_aux_loss',
+             'render', 'record', 'with_scheduler',
+             'state_only', 'minimax_only', 'grad_pen',
+             'use_purl']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
-DIFFICULTY = CONFIG['parameters']['difficulty']
-assert DIFFICULTY in ['easy', 'normal', 'hard']
 if BENCH == 'mujoco':
-    map_ = {'easy': ['InvertedPendulum-v2'],  # debug, sanity check
-            'normal': ['InvertedPendulum-v2', 'Hopper-v3', 'Walker2d-v3'],
-            'hard': ['InvertedPendulum-v2', 'Hopper-v3', 'Walker2d-v3',
-                     'HalfCheetah-v3', 'Ant-v3'],  # paper-grade
-            'ant': ['Ant-v3']}
-    ENVS = map_[DIFFICULTY]
-elif BENCH == 'classic':
-    ENVS = ['MountainCar-v0']
+    TOC = {'debug': ['InvertedDoublePendulum'],
+           'easy': ['InvertedPendulum',
+                    'InvertedDoublePendulum'],
+           'hard': ['HalfCheetah',
+                    'Ant',
+                    'Walker2d'],
+           'insane': ['HalfCheetah',
+                      'Ant']
+           }
+    if args.envset == 'all':
+        ENVS = TOC['easy'] + TOC['hard']
+    else:
+        ENVS = TOC[args.envset]
+    ENVS = ["{}-v2".format(n) for n in ENVS]
+
+    if CLUSTER == 'baobab':
+        # Define per-environement partitions map
+        PEP = {'InvertedPendulum': 'shared-EL7,mono-shared-EL7',
+               'Reacher': 'shared-EL7,mono-shared-EL7',
+               'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
+               'Hopper': 'shared-EL7,mono-shared-EL7',
+               'Walker2d': 'shared-EL7,mono-shared-EL7',
+               'HalfCheetah': 'mono-EL7',
+               'Ant': 'mono-EL7'}
+        # Define per-environment ntasks map
+        PEC = {'InvertedPendulum': '10',
+               'Reacher': '10',
+               'InvertedDoublePendulum': '10',
+               'Hopper': '20',
+               'Walker2d': '40',
+               'HalfCheetah': '40',
+               'Ant': '40'}
+        # Define per-environment timeouts map
+        PET = {'InvertedPendulum': '0-06:00:00',
+               'Reacher': '0-06:00:00',
+               'InvertedDoublePendulum': '0-06:00:00',
+               'Hopper': '0-12:00:00',
+               'Walker2d': '0-12:00:00',
+               'HalfCheetah': '4-00:00:00',
+               'Ant': '4-00:00:00'}
+
+elif BENCH == 'atari':
+    map_ = {'easy': ['Pong'],
+            'normal': ['Qbert',
+                       'MsPacman',
+                       'SpaceInvaders',
+                       'Frostbite',
+                       'Freeway',
+                       'BeamRider',
+                       'Asteroids'],
+            'hard_exploration': ['MontezumaRevenge',
+                                 'Pitfall',
+                                 'PrivateEye'],
+            }
+    if args.envset == 'all':
+        ENVS = TOC['easy'] + TOC['normal'] + TOC['hard_exploration']
+    else:
+        ENVS = TOC[args.envset]
+    ENVS = ["{}NoFrameskip-v4".format(name) for name in ENVS]
+elif BENCH == 'pycolab':
+    map_ = {'box_world': ['BoxWorld-v0'],
+            'cliff_world': ['CliffWalk-v0'],
+            }
+    ENVS = TOC[args.envset]
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 
 # If needed, create the list of demonstrations needed
-NEED_DEMOS = CONFIG['parameters']['need_demos']
-DEMOS = {k: osp.join(CONFIG['parameters']['demo_dir'], ADM[BENCH][k]) for k in ENVS}
+if NEED_DEMOS:
+    demo_dir = os.environ['DEMO_DIR']
+    DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
 
 
 def copy_and_add_seed(hpmap, seed):
@@ -63,11 +121,10 @@ def copy_and_add_seed(hpmap, seed):
     # Add the seed and edit the job uuid to only differ by the seed
     hpmap_.update({'seed': seed})
     # Enrich the uuid with extra information
-    hpmap_.update({'uuid': "{}.{}.{}.seed{}.{}".format(hpmap['task'],
-                                                       hpmap['algo'],
-                                                       hpmap['uuid'],
-                                                       str(seed).zfill(2),
-                                                       hpmap['env_id'])})
+    hpmap_.update({'uuid': "{}.{}.demos{}.seed{}".format(hpmap['uuid'],
+                                                         hpmap['env_id'],
+                                                         str(hpmap['num_demos']).zfill(3),
+                                                         str(seed).zfill(2))})
     return hpmap_
 
 
@@ -80,11 +137,11 @@ def copy_and_add_env(hpmap, env):
     return hpmap_
 
 
-def rand_tuple_from_list(list_):
-    """Return a random tuple from a list of tuples"""
-    # Note: `np.random.choice` does not work on lists of tuples, hence this
-    assert all(isinstance(v, tuple) for v in list_), "not a list of tuples"
-    return list_[np.random.randint(low=0, high=len(list_))]
+def copy_and_add_num_demos(hpmap, num_demos):
+    hpmap_ = deepcopy(hpmap)
+    # Add the num of demos
+    hpmap_.update({'num_demos': num_demos})
+    return hpmap_
 
 
 def get_hps(sweep):
@@ -95,84 +152,91 @@ def get_hps(sweep):
     if sweep:
         # Random search
         hpmap = {
+            # Primary
+            'wandb_project': WANDB_PROJECT,
+
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
-            'pixels': CONFIG['parameters']['pixels'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
-            'enable_visdom': CONFIG['logging']['enable_visdom'],
-            'visdom_server': args.visdom_server,
-            'visdom_port': args.visdom_port,
-            'visdom_username': args.visdom_username,
-            'visdom_password': args.visdom_password,
             'render': False,
-            'record': False,
+            'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
             'algo': CONFIG['parameters']['algo'],
 
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
-            'num_iters': int(float(CONFIG['parameters'].get('num_iters', 1e6))),
-            'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 20),
-            'eval_frequency': CONFIG['parameters'].get('eval_frequency', 1),
+            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
+            'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
+            'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
 
             # Model
-            'feat_x_p': CONFIG['parameters']['feat_x_p'],
-            'feat_x_v': CONFIG['parameters']['feat_x_v'],
-            'with_layernorm': CONFIG['parameters'].get('with_layernorm', False),
+            'perception_stack': CONFIG['parameters']['perception_stack'],
 
             # Optimization
             'p_lr': float(np.random.choice([1e-3, 3e-4])),
             'with_scheduler': CONFIG['parameters']['with_scheduler'],
-            'clip_norm': np.random.choice([5., 10., 20., 40.]),
+            'clip_norm': np.random.choice([.5, 1., 20., 40.]),
 
             # Algorithm
+            'norm_obs': CONFIG['parameters'].get('norm_obs', False),
+            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': np.random.choice([1024, 2048]),
             'optim_epochs_per_iter': np.random.choice([1, 2, 6, 10]),
             'batch_size': np.random.choice([32, 64, 128]),
             'gamma': np.random.choice([0.99, 0.995]),
             'gae_lambda': np.random.choice([0.95, 0.98, 0.99]),
             'eps': np.random.choice([0.1, 0.2, 0.4]),
-            'p_ent_reg_scale': 0.,
+            'baseline_scale': float(np.random.choice([0.1, 0.3, 0.5])),
+            'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
+            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
+            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
+            'ss_aux_loss_scale': np.random.choice([0.001, 0.01, 0.1]),
 
-            # GAIL-specific
-            'd_lr': float(3e-4),
-            'state_only': False,
-            'minimax_only': True,
-            'd_ent_reg_scale': 0.,
-            'd_update_ratio': 2,
-            'num_demos': 16,
+            # Adversarial imitation
+            'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
+            'state_only': CONFIG['parameters'].get('state_only', False),
+            'minimax_only': CONFIG['parameters'].get('minimax_only', True),
+            'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.),
+            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
+            'num_demos': CONFIG['parameters'].get('num_demos', 0),
+            'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
+                                              '"soft_labels_0.1"',
+                                              '"none"']),
+            'real_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
+                                              '"soft_labels_0.1"',
+                                              '"none"']),
+
+            # PU
+            'use_purl': CONFIG['parameters'].get('use_purl', False),
+            'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
         }
     else:
         # No search, fixed map
         hpmap = {
+            # Primary
+            'wandb_project': WANDB_PROJECT,
+
             # Generic
             'uuid': uuid,
             'cuda': CONFIG['parameters']['cuda'],
-            'pixels': CONFIG['parameters']['pixels'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
-            'enable_visdom': CONFIG['logging']['enable_visdom'],
-            'visdom_server': args.visdom_server,
-            'visdom_port': args.visdom_port,
-            'visdom_username': args.visdom_username,
-            'visdom_password': args.visdom_password,
             'render': False,
-            'record': False,
+            'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
             'algo': CONFIG['parameters']['algo'],
 
             # Training
             'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
-            'num_iters': int(float(CONFIG['parameters'].get('num_iters', 1e6))),
-            'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 20),
-            'eval_frequency': CONFIG['parameters'].get('eval_frequency', 1),
+            'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
+            'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
+            'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
 
             # Model
-            'feat_x_p': CONFIG['parameters']['feat_x_p'],
-            'feat_x_v': CONFIG['parameters']['feat_x_v'],
-            'with_layernorm': CONFIG['parameters'].get('with_layernorm', False),
+            'perception_stack': CONFIG['parameters']['perception_stack'],
 
             # Optimization
             'p_lr': float(CONFIG['parameters'].get('p_lr', 3e-4)),
@@ -180,36 +244,55 @@ def get_hps(sweep):
             'clip_norm': CONFIG['parameters'].get('clip_norm', 5.0),
 
             # Algorithm
+            'norm_obs': CONFIG['parameters'].get('norm_obs', False),
+            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': CONFIG['parameters'].get('rollout_len', 2048),
             'optim_epochs_per_iter': CONFIG['parameters'].get('optim_epochs_per_iter', 10),
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
             'gamma': CONFIG['parameters'].get('gamma', 0.995),
             'gae_lambda': CONFIG['parameters'].get('gae_lambda', 0.95),
             'eps': CONFIG['parameters'].get('eps', 0.2),
+            'baseline_scale': float(CONFIG['parameters'].get('baseline_scale', 0.5)),
             'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
+            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
+            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
+            'ss_aux_loss_scale': CONFIG['parameters'].get('ss_aux_loss_scale', 0.1),
 
-            # GAIL-specific
-            'd_lr': float(3e-4),
-            'state_only': False,
-            'minimax_only': True,
-            'd_ent_reg_scale': 0.,
-            'd_update_ratio': 2,
-            'num_demos': 16,
+            # Adversarial imitation
+            'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
+            'state_only': CONFIG['parameters'].get('state_only', False),
+            'minimax_only': CONFIG['parameters'].get('minimax_only', True),
+            'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.),
+            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
+            'num_demos': CONFIG['parameters'].get('num_demos', 0),
+            'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
+            'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
+
+            # PU
+            'use_purl': CONFIG['parameters'].get('use_purl', False),
+            'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
         }
 
     # Duplicate for each environment
     hpmaps = [copy_and_add_env(hpmap, env)
               for env in ENVS]
 
+    if NEED_DEMOS:
+        # Duplicate for each number of demos
+        hpmaps = [copy_and_add_num_demos(hpmap_, num_demos)
+                  for hpmap_ in hpmaps
+                  for num_demos in NUM_DEMOS]
+
     # Duplicate for each seed
-    hpmapz = [copy_and_add_seed(hpmap_, seed)
+    hpmaps = [copy_and_add_seed(hpmap_, seed)
               for hpmap_ in hpmaps
               for seed in range(NUM_SEEDS)]
 
     # Verify that the correct number of configs have been created
-    assert len(hpmapz) == NUM_SEEDS * len(ENVS)
+    assert len(hpmaps) == NUM_SEEDS * len(ENVS) * len(NUM_DEMOS)
 
-    return hpmapz
+    return hpmaps
 
 
 def unroll_options(hpmap):
@@ -231,57 +314,43 @@ def unroll_options(hpmap):
     return arguments
 
 
-def create_job_str(name, command):
+def create_job_str(name, command, envkey):
     """Build the batch script that launches a job"""
+
+    # Prepend python command with python binary path
+    command = osp.join(os.environ['CONDA_PREFIX'], "bin", command)
 
     if CLUSTER == 'baobab':
         # Set sbatch config
         bash_script_str = ('#!/usr/bin/env bash\n\n')
-        bash_script_str += ('#SBATCH --job-name={}\n'
-                            '#SBATCH --partition={}\n'
-                            '#SBATCH --ntasks={}\n'
+        bash_script_str += ('#SBATCH --job-name={jobname}\n'
+                            '#SBATCH --partition={partition}\n'
+                            '#SBATCH --ntasks={ntasks}\n'
                             '#SBATCH --cpus-per-task=1\n'
-                            '#SBATCH --time={}\n'
-                            '#SBATCH --mem=32000\n')
+                            '#SBATCH --time={timeout}\n'
+                            '#SBATCH --mem=32000\n'
+                            '#SBATCH --output=./out/run_%j.out\n'
+                            '#SBATCH --constraint="V3|V4|V5|V6|V7"\n')
         if CONFIG['parameters']['cuda']:
             contraint = "COMPUTE_CAPABILITY_6_0|COMPUTE_CAPABILITY_6_1"
             bash_script_str += ('#SBATCH --gres=gpu:1\n'
                                 '#SBATCH --constraint="{}"\n'.format(contraint))
         bash_script_str += ('\n')
         # Load modules
-        bash_script_str += ('module load GCC/6.3.0-2.27\n')
+        bash_script_str += ('module load GCC/8.3.0 OpenMPI/3.1.4\n')
         if CONFIG['parameters']['cuda']:
             bash_script_str += ('module load CUDA\n')
         bash_script_str += ('\n')
         # Launch command
-        bash_script_str += ('srun {}')
+        bash_script_str += ('srun {command}')
 
-        bash_script_str = bash_script_str.format(name,
-                                                 CONFIG['resources']['partition'],
-                                                 CONFIG['resources']['num_workers'],
-                                                 CONFIG['resources']['timeout'],
-                                                 command)
-    elif CLUSTER == 'cscs':
-        # Set sbatch config
-        bash_script_str = ('#!/usr/bin/env bash\n\n')
-        bash_script_str += ('#SBATCH --job-name={}\n'
-                            '#SBATCH --partition={}\n'
-                            '#SBATCH --ntasks={}\n'
-                            '#SBATCH --cpus-per-task=1\n'
-                            '#SBATCH --time={}\n'
-                            '#SBATCH --constraint=gpu\n\n')
-        # Load modules
-        bash_script_str += ('module load daint-gpu\n')
-        bash_script_str += ('\n')
-        # Launch command
-        bash_script_str += ('srun {}')
+        bash_script_str = bash_script_str.format(jobname=name,
+                                                 partition=PEP[envkey],
+                                                 ntasks=PEC[envkey],
+                                                 timeout=PET[envkey],
+                                                 command=command)
 
-        bash_script_str = bash_script_str.format(name,
-                                                 CONFIG['resources']['partition'],
-                                                 CONFIG['resources']['num_workers'],
-                                                 CONFIG['resources']['timeout'],
-                                                 command)
-    elif CLUSTER == 'threadripper':
+    elif CLUSTER == 'local':
         # Set header
         bash_script_str = ('#!/usr/bin/env bash\n\n')
         bash_script_str += ('# job name: {}\n\n')
@@ -301,7 +370,7 @@ def run(args):
 
     # Create directory for spawned jobs
     os.makedirs("spawn", exist_ok=True)
-    if CLUSTER == 'threadripper':
+    if CLUSTER == 'local':
         os.makedirs("tmux", exist_ok=True)
 
     # Get the hyperparameter set(s)
@@ -319,46 +388,53 @@ def run(args):
         # Terminate in case of duplicate experiment (extremely unlikely though)
         raise ValueError("bad luck, there are dupes -> Try again (:")
     # Create the job maps
-    names = ["{}{}_{}".format(TYPE, str(i).zfill(3), hpmap['uuid'])
-             for i, hpmap in enumerate(hpmaps)]
+    names = ["{}.{}".format(TYPE, hpmap['uuid']) for i, hpmap in enumerate(hpmaps)]
+    # Create environment keys for envionment-specific hyperparameter selection
+    envkeys = [hpmap['env_id'].split('-')[0] for hpmap in hpmaps]
+
     # Finally get all the required job strings
-    jobs = [create_job_str(name, command) for name, command in zipsame(names, commands)]
+    jobs = [create_job_str(name, command, envkey)
+            for name, command, envkey in zipsame(names, commands, envkeys)]
 
     # Spawn the jobs
     for i, (name, job) in enumerate(zipsame(names, jobs)):
         logger.info(">>>>>>>>>>>>>>>>>>>> Job #{} ready to submit. Config below.".format(i))
         logger.info(job + "\n")
-        dir_ = name.split('.')[2]
+        dir_ = name.split('.')[1]
         os.makedirs("spawn/{}".format(dir_), exist_ok=True)
         job_name = "spawn/{}/{}.sh".format(dir_, name)
         with open(job_name, 'w') as f:
             f.write(job)
-        if args.call and not CLUSTER == 'threadripper':
+        if args.call and not CLUSTER == 'local':
             # Spawn the job!
-            check_output(["sbatch", "spawn/{}/{}".format(dir_, job_name)])
+            check_output(["sbatch", job_name])
             logger.info(">>>>>>>>>>>>>>>>>>>> Job #{} submitted.".format(i))
     # Summarize the number of jobs spawned
     logger.info(">>>>>>>>>>>>>>>>>>>> {} jobs were spawned.".format(len(jobs)))
 
-    if CLUSTER == 'threadripper':
-        dir_ = hpmaps[0]['uuid'].split('.')[2]  # arbitrarilly picked index 0
-        session_name = "{}_{}seeds_{}".format(TYPE, str(NUM_SEEDS).zfill(2), dir_)
-        yaml_content = {'session_name': session_name, 'windows': []}
+    if CLUSTER == 'local':
+        dir_ = hpmaps[0]['uuid'].split('.')[0]  # arbitrarilly picked index 0
+        session_name = "{}-{}seeds-{}".format(TYPE, str(NUM_SEEDS).zfill(2), dir_)
+        yaml_content = {'session_name': session_name,
+                        'windows': []}
+        if NEED_DEMOS:
+            yaml_content.update({'environment': {'DEMO_DIR': os.environ['DEMO_DIR']}})
         for i, name in enumerate(names):
             executable = "{}.sh".format(name)
-            single_pane = {'shell_command': ["source activate {}".format(CONDA),
-                                             "chmod u+x spawn/{}/{}".format(dir_, executable),
-                                             "spawn/{}/{}".format(dir_, executable)]}
-            yaml_content['windows'].append({'window_name': "seed{}".format(str(i).zfill(2)),
-                                            'panes': [single_pane]})
+            pane = {'shell_command': ["source activate {}".format(CONDA),
+                                      "chmod u+x spawn/{}/{}".format(dir_, executable),
+                                      "spawn/{}/{}".format(dir_, executable)]}
+            window = {'window_name': "job{}".format(str(i).zfill(2)),
+                      'focus': False,
+                      'panes': [pane]}
+            yaml_content['windows'].append(window)
         # Dump the assembled tmux config into a yaml file
         job_config = "tmux/{}.yaml".format(session_name)
         with open(job_config, "w") as f:
             yaml.dump(yaml_content, f, default_flow_style=False)
         if args.call:
             # Spawn all the jobs in the tmux session!
-            check_output(["tmuxp", "load", "{}".format(job_config)])
-
+            check_output(["tmuxp", "load", "-d", "{}".format(job_config)])
 
 
 if __name__ == "__main__":
