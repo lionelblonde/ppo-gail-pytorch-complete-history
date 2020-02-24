@@ -43,20 +43,20 @@ BOOL_ARGS = ['cuda', 'norm_obs', 'clip_obs', 'binned_aux_loss', 'squared_aux_los
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
-    TOC = {'debug': ['InvertedDoublePendulum'],
-           'easy': ['InvertedPendulum',
-                    'InvertedDoublePendulum'],
-           'hard': ['HalfCheetah',
-                    'Ant',
-                    'Walker2d'],
-           'insane': ['HalfCheetah',
-                      'Ant']
+    TOC = {'debug': ['Hopper-v3'],
+           'easy': ['InvertedPendulum-v2',
+                    'Reacher-v2',
+                    'InvertedDoublePendulum-v2'],
+           'hard': ['Hopper-v3',
+                    'Walker2d-v3',
+                    'HalfCheetah-v3',
+                    'Ant-v3',
+                    'Humanoid-v3']
            }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['hard']
     else:
         ENVS = TOC[args.envset]
-    ENVS = ["{}-v2".format(n) for n in ENVS]
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
@@ -65,24 +65,27 @@ if BENCH == 'mujoco':
                'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
                'Hopper': 'shared-EL7,mono-shared-EL7',
                'Walker2d': 'shared-EL7,mono-shared-EL7',
-               'HalfCheetah': 'mono-EL7',
-               'Ant': 'mono-EL7'}
+               'HalfCheetah': 'shared-EL7,mono-shared-EL7',
+               'Ant': 'shared-EL7,mono-shared-EL7',
+               'Humanoid': 'shared-EL7,mono-shared-EL7'}
         # Define per-environment ntasks map
         PEC = {'InvertedPendulum': '10',
                'Reacher': '10',
                'InvertedDoublePendulum': '10',
-               'Hopper': '20',
+               'Hopper': '40',
                'Walker2d': '40',
                'HalfCheetah': '40',
-               'Ant': '40'}
+               'Ant': '40',
+               'Humanoid': '60'}
         # Define per-environment timeouts map
         PET = {'InvertedPendulum': '0-06:00:00',
                'Reacher': '0-06:00:00',
                'InvertedDoublePendulum': '0-06:00:00',
                'Hopper': '0-12:00:00',
                'Walker2d': '0-12:00:00',
-               'HalfCheetah': '4-00:00:00',
-               'Ant': '4-00:00:00'}
+               'HalfCheetah': '0-12:00:00',
+               'Ant': '0-12:00:00',
+               'Humanoid': '0-12:00:00'}
 
 elif BENCH == 'atari':
     map_ = {'easy': ['Pong'],

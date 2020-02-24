@@ -35,6 +35,9 @@ class GAILAgent(object):
         self.hps = hps
         self.expert_dataset = expert_dataset
         assert not (self.hps.norm_obs and (self.hps.binned_aux_loss or self.hps.squared_aux_loss))
+        assert self.hps.clip_norm >= 0
+        if self.hps.clip_norm <= 0:
+            logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
         # Parse the label smoothing types
         self.apply_ls_fake = self.parse_label_smoothing_type(self.hps.fake_ls_type)
@@ -208,30 +211,36 @@ class GAILAgent(object):
                 p_loss = clip_loss + entropy_loss + (self.hps.baseline_scale * value_loss)
 
                 # Self-supervised auxiliary loss
-                if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
-                    ep_state = torch.cat([next(iter(self.e_dataloader))['obs0'], state])
-                    ep_action = torch.cat([next(iter(self.e_dataloader))['acs'], action])
-                    ep_next_state = torch.cat([next(iter(self.e_dataloader))['obs1'], next_state])
                 if self.hps.binned_aux_loss:
+                    expert_batch = next(iter(self.e_dataloader))
+                    indices = torch.randperm(self.hps.batch_size)  # subsample
+                    size = self.hps.batch_size // 2
+                    ep_state = torch.cat([expert_batch['obs0'][indices[:size]],
+                                          state[indices[:size]]], dim=0)
+                    ep_action = torch.cat([expert_batch['acs'][indices[:size]],
+                                           action[indices[:size]]], dim=0)
+                    ep_next_state = torch.cat([expert_batch['obs1'][indices[:size]],
+                                               next_state[indices[:size]]], dim=0)
                     ss_aux_loss = F.cross_entropy(
-                        input=self.actr.ss_aux_loss(ep_state),
+                        input=self.policy.ss_aux_loss(ep_state),
                         target=self.get_reward(ep_state, ep_action, ep_next_state)[1]
                     )
                 elif self.hps.squared_aux_loss:
                     ss_aux_loss = F.mse_loss(
-                        input=self.actr.ss_aux_loss(ep_state),
-                        target=self.get_reward(ep_state, ep_action, ep_next_state)[0]
+                        input=self.policy.ss_aux_loss(state),
+                        target=self.get_reward(state, action, next_state)[0]
                     )
                 if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
                     ss_aux_loss *= self.hps.ss_aux_loss_scale
-                    # Add to actor loss
+                    # Add to policy loss
                     p_loss += ss_aux_loss
 
                 # Update parameters
                 self.p_optimizer.zero_grad()
                 p_loss.backward()
                 average_gradients(self.policy, self.device)
-                gradn = U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
+                if self.hps.clip_norm > 0:
+                    U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
                 self.p_optimizer.step()
                 self.scheduler.step(iters_so_far)
 
@@ -251,7 +260,7 @@ class GAILAgent(object):
                   'clip_frac': clip_frac}
         losses = {k: v.clone().cpu().data.numpy() for k, v in losses.items()}
 
-        return losses, gradn, self.scheduler.get_last_lr()
+        return losses, self.scheduler.get_last_lr()
 
     def update_disc(self, p_chunk, e_chunk):
         """Update the discriminator network"""
@@ -343,7 +352,7 @@ class GAILAgent(object):
         grads_concat = torch.cat(list(grads), dim=-1)
         return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
 
-    def get_reward(self, curr_ob, ac, next_ob, normalize_clip_ob=True):
+    def get_reward(self, curr_ob, ac, next_ob):
         # Define the obeservation to get the reward of
         ob = next_ob if self.hps.state_only else curr_ob
         # Craft surrogate reward

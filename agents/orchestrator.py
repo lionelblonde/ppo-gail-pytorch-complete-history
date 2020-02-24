@@ -302,14 +302,13 @@ def learn(args,
 
         with timed("training"):
             # Train the policy and value
-            losses, gradnorm, lrnow = agent.train(
+            losses, lrnow = agent.train(
                 rollout=rollout,
                 iters_so_far=iters_so_far,
             )
             # Store the losses and gradients in their respective deques
             d['pol_losses'].append(losses['pol'])
             d['val_losses'].append(losses['val'])
-            d['gradns'].append(gradnorm)
             if hasattr(agent, 'expert_dataset'):
                 d['dis_losses'].append(losses['dis'])
 
@@ -322,7 +321,6 @@ def learn(args,
                                  'mpimean': mpi_mean_reduce(ac_np_mean)}})
             stats.update({'optim': {'pol_loss': np.mean(d['pol_losses']),
                                     'val_loss': np.mean(d['val_losses']),
-                                    'gradn': np.mean(d['gradns']),
                                     'lrnow': lrnow[0]}})
             if hasattr(agent, 'expert_dataset'):
                 stats['optim'].update({'dis_loss': np.mean(d['dis_losses'])})
@@ -378,7 +376,6 @@ def learn(args,
                           step=timesteps_so_far)
             wandb.log({'pol_loss': np.mean(d['pol_losses']),
                        'val_loss': np.mean(d['val_losses']),
-                       'gradn': np.mean(d['gradns']),
                        'lrnow': np.array(lrnow)},
                       step=timesteps_so_far)
             if hasattr(agent, 'expert_dataset'):

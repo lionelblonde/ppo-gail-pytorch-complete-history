@@ -34,6 +34,8 @@ class PPOAgent(object):
         self.device = device
         self.hps = hps
         assert not self.hps.binned_aux_loss and not self.hps.squared_aux_loss
+        if self.hps.clip_norm <= 0:
+            logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
         # Create nets
         Policy = CatPolicy if self.is_discrete else GaussPolicy
@@ -156,7 +158,8 @@ class PPOAgent(object):
                 self.optimizer.zero_grad()
                 loss.backward()
                 average_gradients(self.policy, self.device)
-                gradn = U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
+                if self.hps.clip_norm > 0:
+                    U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
                 self.optimizer.step()
                 self.scheduler.step(iters_so_far)
 
@@ -171,7 +174,7 @@ class PPOAgent(object):
                   'clip_frac': clip_frac}
         losses = {k: v.clone().cpu().data.numpy() for k, v in losses.items()}
 
-        return losses, gradn, self.scheduler.get_last_lr()
+        return losses, self.scheduler.get_last_lr()
 
     def save(self, path, iters):
         SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])

@@ -515,7 +515,7 @@ class GaussPolicy(nn.Module):
             aux = self.r_head(self.r_decoder(x))
             if self.hps.binned_aux_loss:
                 aux = F.log_softmax(aux, dim=1).exp()
-            out.append(out)
+            out.append(aux)
         return out
 
 
