@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils as U
+from helpers.distributed_util import RunMoms
 
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
@@ -36,17 +37,13 @@ def conv_to_fc(x, in_width, in_height):
     return acc[0] * acc[1]
 
 
-def init(nonlin=None, param=None,
-         weight_scale=1., constant_bias=0.):
+def init(weight_scale=1., constant_bias=0.):
     """Perform orthogonal initialization"""
 
     def _init(m):
 
         if (isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear)):
-            scale = (nn.init.calculate_gain(nonlin, param)
-                     if nonlin is not None
-                     else weight_scale)
-            nn.init.orthogonal_(m.weight, gain=scale)
+            nn.init.orthogonal_(m.weight, gain=weight_scale)
             if m.bias is not None:
                 nn.init.constant_(m.bias, constant_bias)
         elif (isinstance(m, nn.BatchNorm2d) or
@@ -78,7 +75,7 @@ class ResBlock(nn.Module):
         ]))
         self.skip_co = nn.Sequential()  # insert activation, downsampling, etc. if needed
         # Perform initialization
-        self.residual_block.apply(init(nonlin='relu', param=None))
+        self.residual_block.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         return self.residual_block(x) + self.skip_co(x)
@@ -99,7 +96,7 @@ class ImpalaBlock(nn.Module):
         ]))
         # Initialize the 'conv2d' layer
         # The residual blocks have already been initialized
-        self.impala_block.conv2d.apply(init(nonlin='relu', param=None))
+        self.impala_block.conv2d.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         return self.impala_block(x)
@@ -202,7 +199,7 @@ class ShallowMLP(nn.Module):
             ]))),
         ]))
         # Perform initialization
-        self.encoder.apply(init(nonlin='relu', param=None))
+        self.encoder.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         return self.encoder(x)
@@ -235,8 +232,8 @@ class TeenyTinyCNN(nn.Module):
             ]))),
         ]))
         # Perform initialization
-        self.encoder.apply(init(nonlin='relu', param=None))
-        self.decoder.apply(init(nonlin='relu', param=None))
+        self.encoder.apply(init(weight_scale=math.sqrt(2)))
+        self.decoder.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -287,8 +284,8 @@ class NatureCNN(nn.Module):
             ]))),
         ]))
         # Perform initialization
-        self.encoder.apply(init(nonlin='relu', param=None))
-        self.decoder.apply(init(nonlin='relu', param=None))
+        self.encoder.apply(init(weight_scale=math.sqrt(2)))
+        self.decoder.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -336,8 +333,8 @@ class SmallImpalaCNN(nn.Module):
             ]))),
         ]))
         # Perform initialization
-        self.encoder.apply(init(nonlin='relu', param=None))
-        self.decoder.apply(init(nonlin='relu', param=None))
+        self.encoder.apply(init(weight_scale=math.sqrt(2)))
+        self.decoder.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -382,7 +379,7 @@ class LargeImpalaCNN(nn.Module):
         ]))
         # Perform initialization
         # Encoder already initialized at this point.
-        self.decoder.apply(init(nonlin='relu', param=None))
+        self.decoder.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -401,7 +398,7 @@ class LargeImpalaCNN(nn.Module):
 
 def perception_stack_parser(x):
     if x == 'shallow_mlp':
-        return (lambda u, v: ShallowMLP(u, v, hidden_size=64)), 64
+        return (lambda u, v: ShallowMLP(u, v, hidden_size=100)), 100
     elif x == 'teeny_tiny_cnn':
         return (lambda u, v: TeenyTinyCNN(u, v)), 64
     elif x == 'nature_cnn':
@@ -422,6 +419,8 @@ class GaussPolicy(nn.Module):
         super(GaussPolicy, self).__init__()
         ac_dim = env.action_space.shape[0]
         self.hps = hps
+        # Define observation whitening
+        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(self.hps.perception_stack)
         self.perception_stack = net_lambda(env, self.hps)
@@ -452,16 +451,17 @@ class GaussPolicy(nn.Module):
                     ('nl', nn.Tanh()),
                 ]))),
             ]))
+            self.r_skip_co = nn.Sequential()
             self.r_head = nn.Linear(fc_in, 3 if self.hps.binned_aux_loss else 1)  # bins
         # Perform initialization
-        self.p_decoder.apply(init(nonlin='relu', param=None))
-        self.p_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.p_decoder.apply(init(weight_scale=5./3.))
+        self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
-            self.v_decoder.apply(init(nonlin='relu', param=None))
-            self.v_head.apply(init(nonlin='linear', param=None))
+            self.v_decoder.apply(init(weight_scale=5./3.))
+            self.v_head.apply(init(weight_scale=0.01))
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
-            self.r_decoder.apply(init(nonlin='relu', param=None))
-            self.r_head.apply(init(nonlin='linear', param=None))
+            self.r_decoder.apply(init(weight_scale=5./3.))
+            self.r_head.apply(init(weight_scale=0.01))
 
     def logp(self, ob, ac):
         out = self.forward(ob)
@@ -507,7 +507,7 @@ class GaussPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        # Extract features
+        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.).float()
         x = self.perception_stack(ob)
         ac_mean = self.p_head(self.p_decoder(x))
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
@@ -528,6 +528,8 @@ class CatPolicy(nn.Module):
     def __init__(self, env, hps):
         super(CatPolicy, self).__init__()
         ac_dim = env.action_space.n
+        # Define observation whitening
+        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
         self.perception_stack = net_lambda(env, hps)
@@ -551,11 +553,11 @@ class CatPolicy(nn.Module):
             ]))
             self.v_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.p_decoder.apply(init(nonlin='relu', param=None))
-        self.p_head.apply(init(weight_scale=0.01, constant_bias=0.0))
+        self.p_decoder.apply(init(weight_scale=5./3.))
+        self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
-            self.v_decoder.apply(init(nonlin='relu', param=None))
-            self.v_head.apply(init(nonlin='linear', param=None))
+            self.v_decoder.apply(init(weight_scale=5./3.))
+            self.v_head.apply(init(weight_scale=0.01))
 
     def logp(self, ob, ac):
         out = self.forward(ob)
@@ -595,6 +597,7 @@ class CatPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
+        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.).float()
         x = self.perception_stack(ob)
         ac_logits = self.p_head(self.p_decoder(x))
         out = [ac_logits]
@@ -608,6 +611,8 @@ class Value(nn.Module):
 
     def __init__(self, env, hps):
         super(Value, self).__init__()
+        # Define observation whitening
+        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
         self.perception_stack = net_lambda(env, hps)
@@ -621,17 +626,17 @@ class Value(nn.Module):
         ]))
         self.v_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.v_decoder.apply(init(nonlin='relu', param=None))
-        self.v_head.apply(init(nonlin='linear', param=None))
+        self.v_decoder.apply(init(weight_scale=5./3.))
+        self.v_head.apply(init(weight_scale=0.01))
 
     def forward(self, ob):
+        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.).float()
         x = self.perception_stack(ob)
         value = self.v_head(self.v_decoder(x))
         return value
 
 
 class Discriminator(nn.Module):
-    # XXX: not image input-ready yet
 
     def __init__(self, env, hps):
         super(Discriminator, self).__init__()
@@ -639,19 +644,21 @@ class Discriminator(nn.Module):
         ac_dim = env.action_space.shape[0]
         self.hps = hps
         self.leak = 0.1
+        # Define observation whitening
+        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define the input dimension, depending on whether actions are used too.
         in_dim = ob_dim if self.hps.state_only else ob_dim + ac_dim
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(in_dim, 64))),
+                ('fc', U.spectral_norm(nn.Linear(in_dim, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(64, 64))),
+                ('fc', U.spectral_norm(nn.Linear(100, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
-        self.score_head = nn.Linear(64, 1)
+        self.score_head = nn.Linear(100, 1)
         # Perform initialization
         self.score_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.score_head.apply(init())
@@ -660,6 +667,7 @@ class Discriminator(nn.Module):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
+        ob = self.rms_obs.standardize(ob)
         x = ob if self.hps.state_only else torch.cat([ob, ac], dim=-1)
         x = self.score_trunk(x)
         score = self.score_head(x)

@@ -163,24 +163,28 @@ class RunMoms(object):
     def __init__(self, shape, comm=COMM, use_mpi=True):
         """Maintain running statistics across wrokers leveraging Chan's method"""
         # Initialize mean and var with float64 precision (objectively more accurate)
-        self.mean = np.zeros(shape, dtype='float64')
-        self.var = np.ones(shape, dtype='float64') + 1e-5  # HAXX to avoid any division by zero
+        self.mean = np.zeros(shape, dtype=np.float64)
+        self.std = np.ones(shape, dtype=np.float64)
         self.count = 1e-4  # HAXX to avoid any division by zero
         self.comm = comm
         self.use_mpi = use_mpi
 
     def update(self, x):
         """Update running statistics using the new batch's statistics"""
+        assert isinstance(x, torch.Tensor)
+        # Clone, change x type to double (float64) and detach
+        x = x.clone().detach().double().cpu().numpy()
         # Compute the statistics of the batch
         if self.use_mpi:
             batch_mean, batch_std, batch_count = mpi_moments(x, axis=0, comm=self.comm)
         else:
-            batch_mean, batch_std, batch_count = np.mean(x, axis=0), np.std(x, axis=0), x.shape[0]
-        batch_var = np.square(batch_std)
+            batch_mean = np.mean(x, axis=0)
+            batch_std = np.std(x, axis=0)
+            batch_count = x.shape[0]
         # Update moments
-        self.update_moms(batch_mean, batch_var, batch_count)
+        self.update_moms(batch_mean, batch_std, batch_count)
 
-    def update_moms(self, batch_mean, batch_var, batch_count):
+    def update_moms(self, batch_mean, batch_std, batch_count):
         """ Implementation of Chan's method to compute and maintain mean and variance estimates
         https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
         """
@@ -188,8 +192,8 @@ class RunMoms(object):
         tot_count = self.count + batch_count
         # Compute new mean
         new_mean = self.mean + delta * batch_count / tot_count
-        m_a = self.var * self.count
-        m_b = batch_var * batch_count
+        m_a = np.square(self.std) * self.count
+        m_b = np.square(batch_std) * batch_count
         M2 = m_a + m_b + np.square(delta) * self.count * batch_count / tot_count
         # Compute new var
         new_var = M2 / tot_count
@@ -197,5 +201,11 @@ class RunMoms(object):
         new_count = tot_count
         # Update moments
         self.mean = new_mean
-        self.var = new_var
+        self.std = np.sqrt(np.maximum(new_var, 1e-2))
         self.count = new_count
+
+    def standardize(self, x):
+        assert isinstance(x, torch.Tensor)
+        mean = torch.Tensor(self.mean).to(x)
+        std = torch.Tensor(self.std).to(x)
+        return (x - mean) / std

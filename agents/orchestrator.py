@@ -48,12 +48,8 @@ def rollout_generator(env, agent, rollout_len):
             ac = ac if isinstance(ac, int) else np.asscalar(ac)
 
         if t > 0 and t % rollout_len == 0:
-            obs0_ = obs0.data.reshape(-1, *agent.ob_shape)
-            if agent.hps.norm_obs:
-                # Update running stats
-                agent.rms_obs.update(obs0_)
             out = {
-                "obs0": obs0_,
+                "obs0": obs0.data.reshape(-1, *agent.ob_shape),
                 "obs1": obs1.data.reshape(-1, *agent.ob_shape),
                 "acs": (acs.data.reshape(-1, *((1,)
                         if isinstance(agent.ac_space, spaces.Discrete)
@@ -136,7 +132,7 @@ def ep_generator(env, agent, render, record):
     env_rews = []
 
     while True:
-        ac, v, _ = agent.predict(ob, sample_or_mode=True)
+        ac, v, _ = agent.predict(ob, sample_or_mode=False)
 
         if not isinstance(agent.ac_space, spaces.Discrete):
             # NaN-proof and clip

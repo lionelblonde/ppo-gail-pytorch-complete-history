@@ -1,6 +1,5 @@
 from collections import namedtuple
 import os.path as osp
-from copy import deepcopy
 
 import numpy as np
 import torch
@@ -75,9 +74,6 @@ class GAILAgent(object):
             log_module_info(logger, 'value', self.policy)
         log_module_info(logger, 'discriminator', self.discriminator)
 
-        if self.hps.norm_obs:
-            self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
-
     def parse_label_smoothing_type(self, ls_type):
         """Parse the `label_smoothing_type` hyperparameter"""
         if ls_type == 'none':
@@ -120,32 +116,9 @@ class GAILAgent(object):
             raise RuntimeError("unknown label smoothing type: '{}'".format(ls_type))
         return _apply_ls
 
-    def norm(self, ob):
-        # Normalize with running mean and running std
-        if torch.is_tensor(ob):
-            ob = ((ob - torch.FloatTensor(self.rms_obs.mean)) /
-                  (torch.FloatTensor(np.sqrt(self.rms_obs.var)) + 1e-12))
-        else:
-            ob = ((ob - self.rms_obs.mean) /
-                  (np.sqrt(self.rms_obs.var) + 1e-12))
-        return ob
-
-    def clip(self, ob, lb=-5.0, ub=5.0):
-        # Clip to remain within a certain range
-        if torch.is_tensor(ob):
-            ob = torch.clamp(ob, lb, ub)
-        else:
-            ob = np.clip(ob, lb, ub)
-        return ob
-
     def predict(self, ob, sample_or_mode):
         # Create tensor from the state (`require_grad=False` by default)
-        ob = ob[None]
-        if self.hps.norm_obs:
-            ob = self.norm(ob)
-        if self.hps.clip_obs:
-            ob = self.clip(ob)
-        ob = torch.FloatTensor(ob).to(self.device)
+        ob = torch.Tensor(ob[None]).to(self.device)
         # Predict an action
         ac = self.policy.sample(ob) if sample_or_mode else self.policy.mode(ob)
         # Also retrieve the log-probability associated with the picked action
@@ -170,16 +143,8 @@ class GAILAgent(object):
         rollout['advs'] = ((rollout['advs'] - rollout['advs'].mean()) /
                            (rollout['advs'].std() + 1e-12))
 
-        # Standardize and clip observations
-        rollout['UNobs0'] = deepcopy(rollout['obs0'])
-        if self.hps.norm_obs:
-            rollout['obs0'] = self.norm(rollout['obs0'])
-        if self.hps.clip_obs:
-            rollout['obs0'] = self.clip(rollout['obs0'])
-
         # Create DataLoader object to iterate over transitions in rollouts
-        dataset = Dataset({k: rollout[k] for k in ['UNobs0',
-                                                   'obs0',
+        dataset = Dataset({k: rollout[k] for k in ['obs0',
                                                    'obs1',
                                                    'acs',
                                                    'vs',
@@ -191,14 +156,20 @@ class GAILAgent(object):
         for _ in range(self.hps.optim_epochs_per_iter):
 
             for chunk in p_dataloader:
-                # Create tensors from the inputs
-                state = torch.FloatTensor(chunk['obs0']).to(self.device)
-                next_state = torch.FloatTensor(chunk['obs1']).to(self.device)
-                action = torch.FloatTensor(chunk['acs']).to(self.device)
-                logp_old = torch.FloatTensor(chunk['logps']).to(self.device)
-                v_old = torch.FloatTensor(chunk['vs']).to(self.device)
-                advantage = torch.FloatTensor(chunk['advs']).to(self.device)
-                return_ = torch.FloatTensor(chunk['td_lam_rets']).to(self.device)
+
+                # Transfer to device
+                state = chunk['obs0'].to(self.device)
+                next_state = chunk['obs1'].to(self.device)
+                action = chunk['acs'].to(self.device)
+                logp_old = chunk['logps'].to(self.device)
+                v_old = chunk['vs'].to(self.device)
+                advantage = chunk['advs'].to(self.device)
+                td_lam_return = chunk['td_lam_rets'].to(self.device)
+
+                # Update runnins moments
+                self.policy.rms_obs.update(state)
+                if not self.hps.shared_value:
+                    self.value.rms_obs.update(state)
 
                 # Policy loss
                 entropy_loss = -self.hps.p_ent_reg_scale * self.policy.entropy(state).mean()
@@ -216,8 +187,8 @@ class GAILAgent(object):
                 else:
                     v = self.value(state)
                 clip_v = v_old + (v - v_old).clamp(-self.hps.eps, self.hps.eps)
-                v_loss_a = (clip_v - return_).pow(2)
-                v_loss_b = (v - return_).pow(2)
+                v_loss_a = (clip_v - td_lam_return).pow(2)
+                v_loss_b = (v - td_lam_return).pow(2)
                 v_loss = torch.max(v_loss_a, v_loss_b).mean()
                 if self.hps.shared_value:
                     p_loss = clip_loss + entropy_loss + (self.hps.baseline_scale * v_loss)
@@ -265,6 +236,8 @@ class GAILAgent(object):
 
         for _ in range(self.hps.d_update_ratio):
             for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
+                self.discriminator.rms_obs.update(torch.cat([p_chunk['obs0'],
+                                                             e_chunk['obs0']], dim=0))
                 p_e_loss = self.update_disc(p_chunk, e_chunk)
 
         # Aggregate the elements to return
@@ -277,17 +250,17 @@ class GAILAgent(object):
                   'kl_approx': kl_approx,
                   'kl_max': kl_max,
                   'clip_frac': clip_frac}
-        losses = {k: v.clone().cpu().data.numpy() for k, v in losses.items()}
+        losses = {k: v.cpu().data.numpy() for k, v in losses.items()}
 
         return losses, self.scheduler.get_last_lr()
 
     def update_disc(self, p_chunk, e_chunk):
         """Update the discriminator network"""
         # Create tensors from the inputs
-        p_state = torch.FloatTensor(p_chunk['UNobs0']).to(self.device)
-        p_action = torch.FloatTensor(p_chunk['acs']).to(self.device)
-        e_state = torch.FloatTensor(e_chunk['obs0']).to(self.device)
-        e_action = torch.FloatTensor(e_chunk['acs']).to(self.device)
+        p_state = p_chunk['obs0'].to(self.device)
+        p_action = p_chunk['acs'].to(self.device)
+        e_state = e_chunk['obs0'].to(self.device)
+        e_action = e_chunk['acs'].to(self.device)
 
         # Compute scores
         p_scores = self.discriminator.D(p_state, p_action)
@@ -377,8 +350,8 @@ class GAILAgent(object):
         # Craft surrogate reward
         assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
         if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.FloatTensor(ob)
-            ac = torch.FloatTensor(ac)
+            ob = torch.Tensor(ob)
+            ac = torch.Tensor(ac)
         # Transfer to cpu
         ob = ob.cpu()
         ac = ac.cpu()
