@@ -12,7 +12,7 @@ from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
-from agents.nets import GaussPolicy, CatPolicy
+from agents.nets import GaussPolicy, Value, CatPolicy
 from agents.gae import gae
 
 
@@ -41,9 +41,14 @@ class PPOAgent(object):
         Policy = CatPolicy if self.is_discrete else GaussPolicy
         self.policy = Policy(self.env, self.hps).to(self.device)
         sync_with_root(self.policy)
+        if not self.hps.shared_value:
+            self.value = Value(self.env, self.hps).to(self.device)
+            sync_with_root(self.value)
 
         # Set up the optimizer
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.hps.p_lr)
+        self.p_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.hps.p_lr)
+        if not self.hps.shared_value:
+            self.v_optimizer = torch.optim.Adam(self.value.parameters(), lr=self.hps.v_lr)
 
         # Set up the learning rate schedule
         def _lr(t):  # flake8: using a def instead of a lambda
@@ -53,9 +58,11 @@ class PPOAgent(object):
             else:
                 return 1.0
 
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, _lr)
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.p_optimizer, _lr)
 
-        log_module_info(logger, 'policy(value)', self.policy)
+        log_module_info(logger, 'policy', self.policy)
+        if not self.hps.shared_value:
+            log_module_info(logger, 'value', self.policy)
 
         if self.hps.norm_obs:
             self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
@@ -91,7 +98,10 @@ class PPOAgent(object):
         # Also retrieve the log-probability associated with the picked action
         logp = self.policy.logp(ob, ac)
         # Place on cpu and collapse into one dimension
-        v = self.policy.value(ob).cpu().detach().numpy().flatten()
+        if self.hps.shared_value:
+            v = self.policy.value(ob).cpu().detach().numpy().flatten()
+        else:
+            v = self.value(ob).cpu().detach().numpy().flatten()
         ac = ac.cpu().detach().numpy().flatten()
         logp = logp.cpu().detach().numpy().flatten()
         return ac, v, logp
@@ -146,26 +156,36 @@ class PPOAgent(object):
                 kl_max = 0.5 * (logp - logp_old).pow(2).max()
                 clip_frac = (ratio - 1.0).abs().gt(self.hps.eps).float().mean()
                 # Value loss
-                v = self.policy.value(state)
+                if self.hps.shared_value:
+                    v = self.policy.value(state)
+                else:
+                    v = self.value(state)
                 clip_v = v_old + (v - v_old).clamp(-self.hps.eps, self.hps.eps)
-                value_loss_a = (clip_v - return_).pow(2)
-                value_loss_b = (v - return_).pow(2)
-                value_loss = torch.max(value_loss_a, value_loss_b).mean()
-                # Aggregated loss
-                loss = clip_loss + entropy_loss + (self.hps.baseline_scale * value_loss)
+                v_loss_a = (clip_v - return_).pow(2)
+                v_loss_b = (v - return_).pow(2)
+                v_loss = torch.max(v_loss_a, v_loss_b).mean()
+                if self.hps.shared_value:
+                    p_loss = clip_loss + entropy_loss + (self.hps.baseline_scale * v_loss)
+                else:
+                    p_loss = clip_loss + entropy_loss
 
                 # Update parameters
-                self.optimizer.zero_grad()
-                loss.backward()
+                self.p_optimizer.zero_grad()
+                p_loss.backward()
                 average_gradients(self.policy, self.device)
                 if self.hps.clip_norm > 0:
                     U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
-                self.optimizer.step()
+                self.p_optimizer.step()
                 self.scheduler.step(iters_so_far)
+                if not self.hps.shared_value:
+                    self.v_optimizer.zero_grad()
+                    v_loss.backward()
+                    average_gradients(self.value, self.device)
+                    self.v_optimizer.step()
 
         # Aggregate the elements to return
         losses = {'pol': clip_loss + entropy_loss,
-                  'val': value_loss,
+                  'val': v_loss,
                   # Sub-losses
                   'clip_loss': clip_loss,
                   'entropy_loss': entropy_loss,
@@ -178,14 +198,27 @@ class PPOAgent(object):
 
     def save(self, path, iters):
         SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])
-        bundle = SaveBundle(
+        p_bundle = SaveBundle(
             model=self.policy.state_dict(),
-            optimizer=self.optimizer.state_dict(),
+            optimizer=self.p_optimizer.state_dict(),
             scheduler=self.scheduler.state_dict(),
         )
-        torch.save(bundle._asdict(), osp.join(path, "policy_iter{}.pth".format(iters)))
+        if not self.hps.shared_value:
+            v_bundle = SaveBundle(
+                model=self.value.state_dict(),
+                optimizer=self.v_optimizer.state_dict(),
+                scheduler=None,
+            )
+        torch.save(p_bundle._asdict(), osp.join(path, "p_iter{}.pth".format(iters)))
+        if not self.hps.shared_value:
+            torch.save(v_bundle._asdict(), osp.join(path, "v_iter{}.pth".format(iters)))
 
     def load(self, path, iters):
-        bundle = torch.load(osp.join(path, "policy_iter{}.pth".format(iters)))
-        self.optimizer.load_state_dict(bundle['optimizer'])
-        self.scheduler.load_state_dict(bundle['scheduler'])
+        p_bundle = torch.load(osp.join(path, "p_iter{}.pth".format(iters)))
+        self.policy.load_state_dict(p_bundle['model'])
+        self.p_optimizer.load_state_dict(p_bundle['optimizer'])
+        self.scheduler.load_state_dict(p_bundle['scheduler'])
+        if not self.hps.shared_value:
+            v_bundle = torch.load(osp.join(path, "v_iter{}.pth".format(iters)))
+            self.value.load_state_dict(v_bundle['model'])
+            self.v_optimizer.load_state_dict(v_bundle['optimizer'])

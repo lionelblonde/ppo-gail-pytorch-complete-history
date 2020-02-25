@@ -20,6 +20,7 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 def rollout_generator(env, agent, rollout_len):
 
     t = 0
+    done = True
 
     # Reset agent's env
     ob = np.array(env.reset())
@@ -370,6 +371,7 @@ def learn(args,
         # Log stats in dashboard
         if rank == 0:
 
+            wandb.log({"num_workers": np.array(world_size)})
             if iters_so_far % args.eval_frequency == 0:
                 wandb.log({'eval_len': np.mean(d['eval_len']),
                            'eval_env_ret': np.mean(d['eval_env_ret'])},

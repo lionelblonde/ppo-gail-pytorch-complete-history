@@ -198,7 +198,7 @@ class ShallowMLP(nn.Module):
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim, hidden_size)),
                 ('ln', nn.LayerNorm(hidden_size)),
-                ('nl', nn.ReLU()),
+                ('nl', nn.Tanh()),
             ]))),
         ]))
         # Perform initialization
@@ -401,7 +401,7 @@ class LargeImpalaCNN(nn.Module):
 
 def perception_stack_parser(x):
     if x == 'shallow_mlp':
-        return (lambda u, v: ShallowMLP(u, v, hidden_size=100)), 100
+        return (lambda u, v: ShallowMLP(u, v, hidden_size=64)), 64
     elif x == 'teeny_tiny_cnn':
         return (lambda u, v: TeenyTinyCNN(u, v)), 64
     elif x == 'nature_cnn':
@@ -430,33 +430,35 @@ class GaussPolicy(nn.Module):
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(fc_in, fc_in)),
                 ('ln', nn.LayerNorm(fc_in)),
-                ('nl', nn.ReLU()),
+                ('nl', nn.Tanh()),
             ]))),
         ]))
         self.p_head = nn.Linear(fc_in, ac_dim)
         self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
-        self.v_decoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(fc_in, fc_in)),
-                ('ln', nn.LayerNorm(fc_in)),
-                ('nl', nn.ReLU()),
-            ]))),
-        ]))
-        self.v_head = nn.Linear(fc_in, 1)
+        if self.hps.shared_value:
+            self.v_decoder = nn.Sequential(OrderedDict([
+                ('fc_block', nn.Sequential(OrderedDict([
+                    ('fc', nn.Linear(fc_in, fc_in)),
+                    ('ln', nn.LayerNorm(fc_in)),
+                    ('nl', nn.Tanh()),
+                ]))),
+            ]))
+            self.v_head = nn.Linear(fc_in, 1)
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(fc_in, fc_in)),
                     ('ln', nn.LayerNorm(fc_in)),
-                    ('nl', nn.ReLU()),
+                    ('nl', nn.Tanh()),
                 ]))),
             ]))
             self.r_head = nn.Linear(fc_in, 3 if self.hps.binned_aux_loss else 1)  # bins
         # Perform initialization
         self.p_decoder.apply(init(nonlin='relu', param=None))
         self.p_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-        self.v_decoder.apply(init(nonlin='relu', param=None))
-        self.v_head.apply(init(nonlin='linear', param=None))
+        if self.hps.shared_value:
+            self.v_decoder.apply(init(nonlin='relu', param=None))
+            self.v_head.apply(init(nonlin='linear', param=None))
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             self.r_decoder.apply(init(nonlin='relu', param=None))
             self.r_head.apply(init(nonlin='linear', param=None))
@@ -491,26 +493,28 @@ class GaussPolicy(nn.Module):
         return kl
 
     def value(self, ob):
-        out = self.forward(ob)
-        return out[2]  # value
+        if self.hps.shared_value:
+            out = self.forward(ob)
+            return out[2]  # value
+        else:
+            raise ValueError("should not be called")
 
     def ss_aux_loss(self, ob):
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             out = self.forward(ob)
-            return out[3]  # aux
+            return out[3] if self.hps.shared_value else out[2]  # aux
         else:
             raise ValueError("should not be called")
 
     def forward(self, ob):
         # Extract features
         x = self.perception_stack(ob)
-        # Go through residual fully-connected layers specific for each head
-        # inspired from OpenAI's RND repo, file located at
-        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
         ac_mean = self.p_head(self.p_decoder(x))
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
-        value = self.v_head(self.v_decoder(x))
-        out = [ac_mean, ac_std, value]
+        out = [ac_mean, ac_std]
+        if self.hps.shared_value:
+            value = self.v_head(self.v_decoder(x))
+            out.append(value)
         if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
             aux = self.r_head(self.r_decoder(x))
             if self.hps.binned_aux_loss:
@@ -532,70 +536,102 @@ class CatPolicy(nn.Module):
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(fc_in, fc_in)),
                 ('ln', nn.LayerNorm(fc_in)),
-                ('nl', nn.ReLU()),
+                ('nl', nn.Tanh()),
             ]))),
         ]))
         self.p_head = nn.Linear(fc_in, ac_dim)
-        self.v_decoder = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(fc_in, fc_in)),
-                ('ln', nn.LayerNorm(fc_in)),
-                ('nl', nn.ReLU()),
-            ]))),
-        ]))
-        self.v_head = nn.Linear(fc_in, 1)
+        if self.hps.shared_value:
+            # Policy and value share their feature extractor
+            self.v_decoder = nn.Sequential(OrderedDict([
+                ('fc_block', nn.Sequential(OrderedDict([
+                    ('fc', nn.Linear(fc_in, fc_in)),
+                    ('ln', nn.LayerNorm(fc_in)),
+                    ('nl', nn.Tanh()),
+                ]))),
+            ]))
+            self.v_head = nn.Linear(fc_in, 1)
         # Perform initialization
         self.p_decoder.apply(init(nonlin='relu', param=None))
         self.p_head.apply(init(weight_scale=0.01, constant_bias=0.0))
-        self.v_decoder.apply(init(nonlin='relu', param=None))
-        self.v_head.apply(init(nonlin='linear', param=None))
+        if self.hps.shared_value:
+            self.v_decoder.apply(init(nonlin='relu', param=None))
+            self.v_head.apply(init(nonlin='linear', param=None))
 
     def logp(self, ob, ac):
-        ac_logits, _ = self.forward(ob)
-        return CatToolkit.logp(ac, ac_logits)
+        out = self.forward(ob)
+        return CatToolkit.logp(ac, out[0])  # ac_logits
 
     def entropy(self, ob):
-        ac_logits, _ = self.forward(ob)
-        return CatToolkit.entropy(ac_logits)
+        out = self.forward(ob)
+        return CatToolkit.entropy(out[0])  # ac_logits
 
     def sample(self, ob):
         # Gumbel-Max trick (>< Gumbel-Softmax trick)
         with torch.no_grad():
-            ac_logits, _ = self.forward(ob)
-            ac = CatToolkit.sample(ac_logits)
+            out = self.forward(ob)
+            ac = CatToolkit.sample(out[0])  # ac_logits
         return ac
 
     def mode(self, ob):
         with torch.no_grad():
-            ac_logits, _ = self.forward(ob)
-            ac = CatToolkit.mode(ac_logits)
+            out = self.forward(ob)
+            ac = CatToolkit.mode(out[0])  # ac_logits
         return ac
 
     def kl(self, ob, other):
         assert isinstance(other, CatPolicy)
         with torch.no_grad():
-            ac_logits, _ = self.forward(ob)
-            ac_logits_, _ = other.forward(ob)
-            kl = CatToolkit.kl(ac_logits, ac_logits_)
+            out_a = self.forward(ob)
+            out_b = other.forward(ob)
+            kl = CatToolkit.kl(out_a[0],
+                               out_b[0])  # ac_logits
         return kl
 
     def value(self, ob):
-        _, v = self.forward(ob)
-        return v
+        if self.hps.shared_value:
+            out = self.forward(ob)
+            return out[1]  # value
+        else:
+            raise ValueError("should not be called")
 
     def forward(self, ob):
-        # Extract features
         x = self.perception_stack(ob)
-        # Go through residual fully-connected layers specific for each head
-        # inspired from OpenAI's RND repo, file located at
-        # random-network-distillation/blob/master/policies/cnn_policy_param_matched.py
         ac_logits = self.p_head(self.p_decoder(x))
+        out = [ac_logits]
+        if self.hps.shared_value:
+            value = self.v_head(self.v_decoder(x))
+            out.append(value)
+        return out
+
+
+class Value(nn.Module):
+
+    def __init__(self, env, hps):
+        super(Value, self).__init__()
+        # Define perception stack
+        net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
+        self.perception_stack = net_lambda(env, hps)
+        # Assemble the last layers and output heads
+        self.v_decoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(fc_in, fc_in)),
+                ('ln', nn.LayerNorm(fc_in)),
+                ('nl', nn.Tanh()),
+            ]))),
+        ]))
+        self.v_head = nn.Linear(fc_in, 1)
+        # Perform initialization
+        self.v_decoder.apply(init(nonlin='relu', param=None))
+        self.v_head.apply(init(nonlin='linear', param=None))
+
+    def forward(self, ob):
+        x = self.perception_stack(ob)
         value = self.v_head(self.v_decoder(x))
-        # Return the heads
-        return ac_logits, value
+        return value
 
 
 class Discriminator(nn.Module):
+    # XXX: not image input-ready yet
 
     def __init__(self, env, hps):
         super(Discriminator, self).__init__()
@@ -607,15 +643,15 @@ class Discriminator(nn.Module):
         in_dim = ob_dim if self.hps.state_only else ob_dim + ac_dim
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(in_dim, 100))),
+                ('fc', U.spectral_norm(nn.Linear(in_dim, 64))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(100, 100))),
+                ('fc', U.spectral_norm(nn.Linear(64, 64))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
-        self.score_head = nn.Linear(100, 1)
+        self.score_head = nn.Linear(64, 1)
         # Perform initialization
         self.score_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.score_head.apply(init())

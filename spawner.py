@@ -36,7 +36,7 @@ CONDA = CONFIG['resources']['conda_env']
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
 BOOL_ARGS = ['cuda', 'norm_obs', 'clip_obs', 'binned_aux_loss', 'squared_aux_loss',
-             'render', 'record', 'with_scheduler',
+             'render', 'record', 'with_scheduler', 'shared_value',
              'state_only', 'minimax_only', 'grad_pen',
              'use_purl']
 
@@ -45,7 +45,6 @@ BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     TOC = {'debug': ['Hopper-v3'],
            'easy': ['InvertedPendulum-v2',
-                    'Reacher-v2',
                     'InvertedDoublePendulum-v2'],
            'hard': ['Hopper-v3',
                     'Walker2d-v3',
@@ -69,9 +68,9 @@ if BENCH == 'mujoco':
                'Ant': 'shared-EL7,mono-shared-EL7',
                'Humanoid': 'shared-EL7,mono-shared-EL7'}
         # Define per-environment ntasks map
-        PEC = {'InvertedPendulum': '10',
-               'Reacher': '10',
-               'InvertedDoublePendulum': '10',
+        PEC = {'InvertedPendulum': '20',
+               'Reacher': '20',
+               'InvertedDoublePendulum': '20',
                'Hopper': '40',
                'Walker2d': '40',
                'HalfCheetah': '40',
@@ -176,9 +175,11 @@ def get_hps(sweep):
 
             # Model
             'perception_stack': CONFIG['parameters']['perception_stack'],
+            'shared_value': CONFIG['parameters']['shared_value'],
 
             # Optimization
             'p_lr': float(np.random.choice([1e-3, 3e-4])),
+            'v_lr': float(np.random.choice([3e-3, 1e-3])),
             'with_scheduler': CONFIG['parameters']['with_scheduler'],
             'clip_norm': np.random.choice([.5, 1., 20., 40.]),
 
@@ -240,9 +241,11 @@ def get_hps(sweep):
 
             # Model
             'perception_stack': CONFIG['parameters']['perception_stack'],
+            'shared_value': CONFIG['parameters']['shared_value'],
 
             # Optimization
             'p_lr': float(CONFIG['parameters'].get('p_lr', 3e-4)),
+            'v_lr': float(CONFIG['parameters'].get('v_lr', 1e-3)),
             'with_scheduler': CONFIG['parameters']['with_scheduler'],
             'clip_norm': CONFIG['parameters'].get('clip_norm', 5.0),
 
