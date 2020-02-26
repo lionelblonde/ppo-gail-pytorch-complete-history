@@ -43,8 +43,6 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--clip_norm', type=float, default=None)
 
     # Algorithm
-    boolean_flag(parser, 'norm_obs', default=False)
-    boolean_flag(parser, 'clip_obs', default=False)
     parser.add_argument('--rollout_len', help='number of interactions per iteration',
                         type=int, default=1024)
     parser.add_argument('--optim_epochs_per_iter', type=int, default=10)

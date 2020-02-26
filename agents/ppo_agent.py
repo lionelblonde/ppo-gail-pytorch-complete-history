@@ -3,7 +3,6 @@ import os.path as osp
 
 from gym import spaces
 
-import numpy as np
 import torch
 import torch.nn.utils as U
 from torch.utils.data import DataLoader
@@ -11,7 +10,7 @@ from torch.utils.data import DataLoader
 from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
-from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
+from helpers.distributed_util import average_gradients, sync_with_root
 from agents.nets import GaussPolicy, Value, CatPolicy
 from agents.gae import gae
 
@@ -64,35 +63,9 @@ class PPOAgent(object):
         if not self.hps.shared_value:
             log_module_info(logger, 'value', self.policy)
 
-        if self.hps.norm_obs:
-            self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
-
-    def norm(self, ob):
-        # Normalize with running mean and running std
-        if torch.is_tensor(ob):
-            ob = ((ob - torch.FloatTensor(self.rms_obs.mean)) /
-                  (torch.FloatTensor(np.sqrt(self.rms_obs.var)) + 1e-12))
-        else:
-            ob = ((ob - self.rms_obs.mean) /
-                  (np.sqrt(self.rms_obs.var) + 1e-12))
-        return ob
-
-    def clip(self, ob, lb=-5.0, ub=5.0):
-        # Clip to remain within a certain range
-        if torch.is_tensor(ob):
-            ob = torch.clamp(ob, lb, ub)
-        else:
-            ob = np.clip(ob, lb, ub)
-        return ob
-
     def predict(self, ob, sample_or_mode):
         # Create tensor from the state (`require_grad=False` by default)
-        ob = ob[None]
-        if self.hps.norm_obs:
-            ob = self.norm(ob)
-        if self.hps.clip_obs:
-            ob = self.clip(ob)
-        ob = torch.FloatTensor(ob).to(self.device)
+        ob = torch.Tensor(ob[None]).to(self.device)
         # Predict an action
         ac = self.policy.sample(ob) if sample_or_mode else self.policy.mode(ob)
         # Also retrieve the log-probability associated with the picked action
@@ -111,17 +84,11 @@ class PPOAgent(object):
 
         # Augment `rollout` with GAE (Generalized Advantage Estimation), which among
         # other things adds the GAE estimate of the MC estimate of the return
-        gae(rollout, self.hps.gamma, self.hps.gae_lambda, rew_key='rews')
+        gae(rollout, self.hps.gamma, self.hps.gae_lambda, rew_key='env_rews')
 
         # Standardize advantage function estimate
         rollout['advs'] = ((rollout['advs'] - rollout['advs'].mean()) /
-                           (rollout['advs'].std() + 1e-12))
-
-        # Standardize and clip observations
-        if self.hps.norm_obs:
-            rollout['obs0'] = self.norm(rollout['obs0'])
-        if self.hps.clip_obs:
-            rollout['obs0'] = self.clip(rollout['obs0'])
+                           (rollout['advs'].std() + 1e-8))
 
         # Create DataLoader object to iterate over transitions in rollouts
         dataset = Dataset({k: rollout[k] for k in ['obs0',
@@ -136,13 +103,18 @@ class PPOAgent(object):
 
             for chunk in dataloader:
 
-                # Create tensors from the inputs
-                state = torch.FloatTensor(chunk['obs0']).to(self.device)
-                action = torch.FloatTensor(chunk['acs']).to(self.device)
-                logp_old = torch.FloatTensor(chunk['logps']).to(self.device)
-                v_old = torch.FloatTensor(chunk['vs']).to(self.device)
-                advantage = torch.FloatTensor(chunk['advs']).to(self.device)
-                return_ = torch.FloatTensor(chunk['td_lam_rets']).to(self.device)
+                # Transfer to device
+                state = chunk['obs0'].to(self.device)
+                action = chunk['acs'].to(self.device)
+                logp_old = chunk['logps'].to(self.device)
+                v_old = chunk['vs'].to(self.device)
+                advantage = chunk['advs'].to(self.device)
+                td_lam_return = chunk['td_lam_rets'].to(self.device)
+
+                # Update running moments
+                self.policy.rms_obs.update(state)
+                if not self.hps.shared_value:
+                    self.value.rms_obs.update(state)
 
                 # Policy loss
                 entropy_loss = -self.hps.p_ent_reg_scale * self.policy.entropy(state).mean()
@@ -161,8 +133,8 @@ class PPOAgent(object):
                 else:
                     v = self.value(state)
                 clip_v = v_old + (v - v_old).clamp(-self.hps.eps, self.hps.eps)
-                v_loss_a = (clip_v - return_).pow(2)
-                v_loss_b = (v - return_).pow(2)
+                v_loss_a = (clip_v - td_lam_return).pow(2)
+                v_loss_b = (v - td_lam_return).pow(2)
                 v_loss = torch.max(v_loss_a, v_loss_b).mean()
                 if self.hps.shared_value:
                     p_loss = clip_loss + entropy_loss + (self.hps.baseline_scale * v_loss)

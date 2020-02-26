@@ -2,7 +2,7 @@ import time
 from copy import deepcopy
 import os
 import os.path as osp
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 
 import wandb
 import numpy as np
@@ -21,19 +21,29 @@ def rollout_generator(env, agent, rollout_len):
 
     t = 0
     done = True
-
     # Reset agent's env
     ob = np.array(env.reset())
-
+    # Init collections
     obs0 = RingBuffer(rollout_len, shape=agent.ob_shape)
     obs1 = RingBuffer(rollout_len, shape=agent.ob_shape)
     acs = RingBuffer(rollout_len, shape=((1,)
                                          if isinstance(agent.ac_space, spaces.Discrete)
                                          else agent.ac_shape))
-    vs = RingBuffer(rollout_len, shape=(1,), dtype='float32')
-    logps = RingBuffer(rollout_len, shape=(1,), dtype='float32')
-    rews = RingBuffer(rollout_len, shape=(1,), dtype='float32')
-    dones = RingBuffer(rollout_len, shape=(1,), dtype='int32')
+    vs = RingBuffer(rollout_len, shape=(1,), dtype=np.float32)
+    logps = RingBuffer(rollout_len, shape=(1,), dtype=np.float32)
+    syn_rews = RingBuffer(rollout_len, shape=(1,), dtype=np.float32)
+    env_rews = RingBuffer(rollout_len, shape=(1,), dtype=np.float32)
+    dones = RingBuffer(rollout_len, shape=(1,), dtype=np.int32)
+    # Init current episode statistics
+    cur_ep_len = 0
+    cur_ep_env_ret = 0
+    if agent.hps.algo == 'gail':
+        cur_ep_syn_ret = 0
+    # Init global episodic statistics
+    ep_lens = []
+    ep_env_rets = []
+    if agent.hps.algo == 'gail':
+        ep_syn_rets = []
 
     while True:
 
@@ -49,6 +59,7 @@ def rollout_generator(env, agent, rollout_len):
 
         if t > 0 and t % rollout_len == 0:
             out = {
+                # Data collected during the rollout
                 "obs0": obs0.data.reshape(-1, *agent.ob_shape),
                 "obs1": obs1.data.reshape(-1, *agent.ob_shape),
                 "acs": (acs.data.reshape(-1, *((1,)
@@ -56,34 +67,62 @@ def rollout_generator(env, agent, rollout_len):
                         else agent.ac_shape))),
                 "vs": vs.data.reshape(-1, 1),
                 "logps": logps.data.reshape(-1, 1),
-                "rews": rews.data.reshape(-1, 1),
+                "env_rews": env_rews.data.reshape(-1, 1),
                 "dones": dones.data.reshape(-1, 1),
                 "next_v": v * (1 - done),
+                # Global episodic statistics
+                "ep_lens": ep_lens,
+                "ep_env_rets": ep_env_rets,
             }
+            if agent.hps.algo == 'gail':
+                out.update({
+                    "syn_rews": syn_rews.data.reshape(-1, 1),
+                    "ep_syn_rets": ep_syn_rets,
+                })
             # Yield
             yield out
+            # Reset global episodic statistics
+            ep_lens = []
+            ep_env_rets = []
+            if agent.hps.algo == 'gail':
+                ep_syn_rets = []
 
         # Interact with env(s)
         new_ob, env_rew, done, _ = env.step(ac)
 
-        # Set reward
-        if hasattr(agent, 'expert_dataset'):
-            rew = np.asscalar(agent.get_reward(ob, ac, new_ob)[0].cpu().numpy().flatten())
-        else:
-            rew = deepcopy(env_rew)
-
+        # Populate collections
         obs0.append(ob)
         obs1.append(new_ob)
         acs.append(ac)
         vs.append(v)
         logps.append(logp)
-        rews.append(rew)
+        env_rews.append(env_rew)
         dones.append(done)
+
+        if agent.hps.algo == 'gail':
+            # Get synthetic rewards
+            syn_rew = np.asscalar(agent.get_reward(ob, ac, new_ob)[0].cpu().numpy().flatten())
+            syn_rews.append(syn_rew)
 
         # Set current state with the next
         ob = np.array(deepcopy(new_ob))
 
+        # Update current episode statistics
+        cur_ep_len += 1
+        cur_ep_env_ret += env_rew
+        if agent.hps.algo == 'gail':
+            cur_ep_syn_ret += syn_rew
+
         if done:
+            # Update the global episodic statistics and
+            # reset current episode statistics
+            ep_lens.append(cur_ep_len)
+            cur_ep_len = 0
+            ep_env_rets.append(cur_ep_env_ret)
+            cur_ep_env_ret = 0
+            if agent.hps.algo == 'gail':
+                ep_syn_rets.append(cur_ep_syn_ret)
+                cur_ep_syn_ret = 0
             # Reset env
             ob = np.array(env.reset())
 
@@ -283,7 +322,7 @@ def learn(args,
         # if iters_so_far % 20 == 0:
         #     # Check if the mpi workers are still synced
         #     sync_check(agent.policy)
-        #     if hasattr(agent, 'expert_dataset'):
+        #     if agent.hps.algo == 'gail':
         #         sync_check(agent.discriminator)
 
         if rank == 0 and iters_so_far % args.save_frequency == 0:
@@ -297,6 +336,17 @@ def learn(args,
             logger.info("[INFO] {} ".format("timesteps".ljust(20, '.')) +
                         "{}".format(timesteps_so_far + args.rollout_len))
 
+            # Log interaction stats
+            roll_len = mpi_mean_reduce(rollout['ep_lens'])
+            roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
+            logger.record_tabular('roll_len', roll_len)
+            logger.record_tabular('roll_env_ret', roll_env_ret)
+            if agent.hps.algo == 'gail':
+                roll_syn_ret = mpi_mean_reduce(rollout['ep_syn_rets'])
+                logger.record_tabular('roll_syn_ret', roll_syn_ret)
+            logger.info("[CSV] dumping roll stats in .csv file")
+            logger.dump_tabular()
+
         with timed("training"):
             # Train the policy and value
             losses, lrnow = agent.train(
@@ -306,25 +356,8 @@ def learn(args,
             # Store the losses and gradients in their respective deques
             d['pol_losses'].append(losses['pol'])
             d['val_losses'].append(losses['val'])
-            if hasattr(agent, 'expert_dataset'):
+            if agent.hps.algo == 'gail':
                 d['dis_losses'].append(losses['dis'])
-
-            # Log statistics
-            stats = OrderedDict()
-            ac_np_mean = np.mean(rollout['acs'], axis=0)  # vector
-            stats.update({'ac': {'min': np.amin(ac_np_mean),
-                                 'max': np.amax(ac_np_mean),
-                                 'mean': np.mean(ac_np_mean),
-                                 'mpimean': mpi_mean_reduce(ac_np_mean)}})
-            stats.update({'optim': {'pol_loss': np.mean(d['pol_losses']),
-                                    'val_loss': np.mean(d['val_losses']),
-                                    'lrnow': lrnow[0]}})
-            if hasattr(agent, 'expert_dataset'):
-                stats['optim'].update({'dis_loss': np.mean(d['dis_losses'])})
-            for k, v in stats.items():
-                assert isinstance(v, dict)
-                v_ = {a: "{:.5f}".format(b) if not isinstance(b, str) else b for a, b in v.items()}
-                logger.info("[INFO] {} {}".format(k.ljust(20, '.'), v_))
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -333,20 +366,18 @@ def learn(args,
 
                 with timed("evaluating"):
 
-                    # Use the running stats of the training environment to normalize
-                    if hasattr(eval_env, 'running_moments'):
-                        eval_env.running_moments = deepcopy(env.running_moments)
-
                     for eval_step in range(args.eval_steps_per_iter):
                         # Sample an episode w/ non-perturbed actor w/o storing anything
                         eval_ep = eval_ep_gen.__next__()
                         # Aggregate data collected during the evaluation to the buffers
-                        d['eval_len'].append(eval_ep['ep_len'])
-                        d['eval_env_ret'].append(eval_ep['ep_env_ret'])
+                        d['eval_ep_len'].append(eval_ep['ep_len'])
+                        d['eval_ep_env_ret'].append(eval_ep['ep_env_ret'])
 
                     # Log evaluation stats
-                    logger.record_tabular('ep_len', np.mean(d['eval_len']))
-                    logger.record_tabular('ep_env_ret', np.mean(d['eval_env_ret']))
+                    eval_len = np.mean(d['eval_ep_len'])
+                    eval_env_ret = np.mean(d['eval_ep_env_ret'])
+                    logger.record_tabular('eval_len', eval_len)
+                    logger.record_tabular('eval_env_ret', eval_env_ret)
                     logger.info("[CSV] dumping eval stats in .csv file")
                     logger.dump_tabular()
 
@@ -368,16 +399,25 @@ def learn(args,
         if rank == 0:
 
             wandb.log({"num_workers": np.array(world_size)})
-            if iters_so_far % args.eval_frequency == 0:
-                wandb.log({'eval_len': np.mean(d['eval_len']),
-                           'eval_env_ret': np.mean(d['eval_env_ret'])},
+
+            wandb.log({'roll_len': roll_len,
+                       'roll_env_ret': roll_env_ret},
+                      step=timesteps_so_far)
+            if agent.hps.algo == 'gail':
+                wandb.log({'roll_syn_ret': roll_syn_ret},
                           step=timesteps_so_far)
+
             wandb.log({'pol_loss': np.mean(d['pol_losses']),
                        'val_loss': np.mean(d['val_losses']),
                        'lrnow': np.array(lrnow)},
                       step=timesteps_so_far)
-            if hasattr(agent, 'expert_dataset'):
+            if agent.hps.algo == 'gail':
                 wandb.log({'dis_loss': np.mean(d['dis_losses'])},
+                          step=timesteps_so_far)
+
+            if iters_so_far % args.eval_frequency == 0:
+                wandb.log({'eval_len': eval_len,
+                           'eval_env_ret': eval_env_ret},
                           step=timesteps_so_far)
 
         # Increment counters

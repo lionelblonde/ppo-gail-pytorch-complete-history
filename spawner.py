@@ -35,7 +35,7 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'norm_obs', 'clip_obs', 'binned_aux_loss', 'squared_aux_loss',
+BOOL_ARGS = ['cuda', 'binned_aux_loss', 'squared_aux_loss',
              'render', 'record', 'with_scheduler', 'shared_value',
              'state_only', 'minimax_only', 'grad_pen',
              'use_purl']
@@ -184,8 +184,6 @@ def get_hps(sweep):
             'clip_norm': np.random.choice([.5, 1., 20., 40.]),
 
             # Algorithm
-            'norm_obs': CONFIG['parameters'].get('norm_obs', False),
-            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': np.random.choice([1024, 2048]),
             'optim_epochs_per_iter': np.random.choice([1, 2, 6, 10]),
             'batch_size': np.random.choice([32, 64, 128]),
@@ -204,7 +202,6 @@ def get_hps(sweep):
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
-            'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
@@ -250,8 +247,6 @@ def get_hps(sweep):
             'clip_norm': CONFIG['parameters'].get('clip_norm', 5.0),
 
             # Algorithm
-            'norm_obs': CONFIG['parameters'].get('norm_obs', False),
-            'clip_obs': CONFIG['parameters'].get('clip_obs', False),
             'rollout_len': CONFIG['parameters'].get('rollout_len', 2048),
             'optim_epochs_per_iter': CONFIG['parameters'].get('optim_epochs_per_iter', 10),
             'batch_size': CONFIG['parameters'].get('batch_size', 128),
@@ -270,7 +265,6 @@ def get_hps(sweep):
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.),
             'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
-            'num_demos': CONFIG['parameters'].get('num_demos', 0),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),

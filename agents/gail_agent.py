@@ -1,7 +1,6 @@
 from collections import namedtuple
 import os.path as osp
 
-import numpy as np
 import torch
 import torch.nn.utils as U
 import torch.nn.functional as F
@@ -12,7 +11,7 @@ from torch.autograd import Variable
 from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
-from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
+from helpers.distributed_util import average_gradients, sync_with_root
 from agents.nets import GaussPolicy, Value, Discriminator
 from agents.gae import gae
 
@@ -137,11 +136,11 @@ class GAILAgent(object):
 
         # Augment `rollout` with GAE (Generalized Advantage Estimation), which among
         # other things adds the GAE estimate of the MC estimate of the return
-        gae(rollout, self.hps.gamma, self.hps.gae_lambda, rew_key="rews")
+        gae(rollout, self.hps.gamma, self.hps.gae_lambda, rew_key='syn_rews')
 
         # Standardize advantage function estimate
         rollout['advs'] = ((rollout['advs'] - rollout['advs'].mean()) /
-                           (rollout['advs'].std() + 1e-12))
+                           (rollout['advs'].std() + 1e-8))
 
         # Create DataLoader object to iterate over transitions in rollouts
         dataset = Dataset({k: rollout[k] for k in ['obs0',
@@ -166,7 +165,7 @@ class GAILAgent(object):
                 advantage = chunk['advs'].to(self.device)
                 td_lam_return = chunk['td_lam_rets'].to(self.device)
 
-                # Update runnins moments
+                # Update running moments
                 self.policy.rms_obs.update(state)
                 if not self.hps.shared_value:
                     self.value.rms_obs.update(state)
@@ -176,7 +175,8 @@ class GAILAgent(object):
                 logp = self.policy.logp(state, action)
                 ratio = torch.exp(logp - logp_old)
                 surrogate_loss_a = -advantage * ratio
-                surrogate_loss_b = -advantage * ratio.clamp(1.0 - self.hps.eps, 1.0 + self.hps.eps)
+                surrogate_loss_b = -advantage * ratio.clamp(1.0 - self.hps.eps,
+                                                            1.0 + self.hps.eps)
                 clip_loss = torch.max(surrogate_loss_a, surrogate_loss_b).mean()
                 kl_approx = 0.5 * (logp - logp_old).pow(2).mean()
                 kl_max = 0.5 * (logp - logp_old).pow(2).max()

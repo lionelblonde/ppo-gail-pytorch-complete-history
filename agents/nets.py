@@ -186,23 +186,39 @@ class CatToolkit(object):
 
 class ShallowMLP(nn.Module):
 
-    def __init__(self, env, hps, hidden_size):
+    def __init__(self, env, hps, hidsize, extrahid=False):
         """MLP layer stack as usually used in Deep RL"""
         super(ShallowMLP, self).__init__()
         ob_dim = env.observation_space.shape[0]
+        self.extrahid = extrahid
         # Assemble fully-connected encoder
-        self.encoder = nn.Sequential(OrderedDict([
+        self.encoder_1 = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, hidden_size)),
-                ('ln', nn.LayerNorm(hidden_size)),
+                ('fc', nn.Linear(ob_dim, hidsize)),
+                ('ln', nn.LayerNorm(hidsize)),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
+        if self.extrahid:
+            self.encoder_2 = nn.Sequential(OrderedDict([
+                ('fc_block', nn.Sequential(OrderedDict([
+                    ('fc', nn.Linear(hidsize, hidsize)),
+                    ('ln', nn.LayerNorm(hidsize)),
+                    ('nl', nn.Tanh()),
+                ]))),
+            ]))
+            # Create skip connection
+            self.skip_co = nn.Sequential()
         # Perform initialization
-        self.encoder.apply(init(weight_scale=math.sqrt(2)))
+        self.encoder_1.apply(init(weight_scale=5./3.))
+        if self.extrahid:
+            self.encoder_2.apply(init(weight_scale=0.1))  # lower init scale because extrahid
 
     def forward(self, x):
-        return self.encoder(x)
+        x = self.encoder_1(x)
+        if self.extrahid:
+            x = self.skip_co(x) + self.encoder_2(x)
+        return x
 
 
 class TeenyTinyCNN(nn.Module):
@@ -398,7 +414,9 @@ class LargeImpalaCNN(nn.Module):
 
 def perception_stack_parser(x):
     if x == 'shallow_mlp':
-        return (lambda u, v: ShallowMLP(u, v, hidden_size=100)), 100
+        return (lambda u, v: ShallowMLP(u, v, hidsize=100, extrahid=False)), 100
+    elif x == 'skip_shallow_mlp':
+        return (lambda u, v: ShallowMLP(u, v, hidsize=100, extrahid=True)), 100
     elif x == 'teeny_tiny_cnn':
         return (lambda u, v: TeenyTinyCNN(u, v)), 64
     elif x == 'nature_cnn':
