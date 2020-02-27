@@ -93,8 +93,8 @@ class PPOAgent(object):
         # Create DataLoader object to iterate over transitions in rollouts
         dataset = Dataset({k: rollout[k] for k in ['obs0',
                                                    'acs',
-                                                   'vs',
                                                    'logps',
+                                                   'vs',
                                                    'advs',
                                                    'td_lam_rets']})
         dataloader = DataLoader(dataset, self.hps.batch_size, shuffle=True)

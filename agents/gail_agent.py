@@ -146,8 +146,8 @@ class GAILAgent(object):
         dataset = Dataset({k: rollout[k] for k in ['obs0',
                                                    'obs1',
                                                    'acs',
-                                                   'vs',
                                                    'logps',
+                                                   'vs',
                                                    'advs',
                                                    'td_lam_rets']})
         p_dataloader = DataLoader(dataset, self.hps.batch_size, shuffle=True)
@@ -198,18 +198,19 @@ class GAILAgent(object):
                 # Self-supervised auxiliary loss
                 if self.hps.binned_aux_loss:
                     expert_batch = next(iter(self.e_dataloader))
-                    indices = torch.randperm(self.hps.batch_size)  # subsample
-                    size = self.hps.batch_size // 2
-                    ep_state = torch.cat([expert_batch['obs0'][indices[:size]],
-                                          state[indices[:size]]], dim=0)
-                    ep_action = torch.cat([expert_batch['acs'][indices[:size]],
-                                           action[indices[:size]]], dim=0)
-                    ep_next_state = torch.cat([expert_batch['obs1'][indices[:size]],
-                                               next_state[indices[:size]]], dim=0)
-                    ss_aux_loss = F.cross_entropy(
-                        input=self.policy.ss_aux_loss(ep_state),
-                        target=self.get_reward(ep_state, ep_action, ep_next_state)[1]
+                    ss_aux_loss_p = F.cross_entropy(
+                        input=self.policy.ss_aux_loss(state),
+                        target=self.get_reward(state,
+                                               action,
+                                               next_state)[1]
                     )
+                    ss_aux_loss_e = F.cross_entropy(
+                        input=self.policy.ss_aux_loss(expert_batch['obs0']),
+                        target=self.get_reward(expert_batch['obs0'],
+                                               expert_batch['acs'],
+                                               expert_batch['obs1'])[1]
+                    )
+                    ss_aux_loss = ss_aux_loss_p + ss_aux_loss_e
                 elif self.hps.squared_aux_loss:
                     ss_aux_loss = F.mse_loss(
                         input=self.policy.ss_aux_loss(state),
@@ -382,7 +383,7 @@ class GAILAgent(object):
             if binned.view(-1)[i] > 2. or binned.view(-1)[i] < 0.:
                 # This should never happen, flag, but don't rupt
                 logger.info("[WARN] binned.view(-1)[{}]={}.".format(i, binned.view(-1)[i]))
-        return reward, binned
+        return self.hps.syn_rew_scale * reward, binned
 
     def save(self, path, iters):
         SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])

@@ -94,7 +94,7 @@ def average_gradients(model, device):
         # Average the gradients across workers
         avg_grads = mpi_mean_like(grads)
         # Create a torch tensor out of it
-        avg_grads_tensor = torch.FloatTensor(avg_grads).to(device)
+        avg_grads_tensor = torch.Tensor(avg_grads).to(device)
         # Replace the param's gradient by the mpi-average
         param.grad.copy_(avg_grads_tensor)
 
@@ -162,12 +162,12 @@ class RunMoms(object):
 
     def __init__(self, shape, comm=COMM, use_mpi=True):
         """Maintain running statistics across wrokers leveraging Chan's method"""
+        self.use_mpi = use_mpi
         # Initialize mean and var with float64 precision (objectively more accurate)
         self.mean = np.zeros(shape, dtype=np.float64)
         self.std = np.ones(shape, dtype=np.float64)
         self.count = 1e-4  # HAXX to avoid any division by zero
         self.comm = comm
-        self.use_mpi = use_mpi
 
     def update(self, x):
         """Update running statistics using the new batch's statistics"""

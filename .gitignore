@@ -139,6 +139,7 @@ dmypy.json
 
 # Custom
 data/
+downloads/
 spawn/
 tmux/
 tmp/

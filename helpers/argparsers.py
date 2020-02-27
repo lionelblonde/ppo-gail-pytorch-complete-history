@@ -68,6 +68,7 @@ def argparser(description="PPO/GAIL Experiment"):
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
+    parser.add_argument('--syn_rew_scale', type=float, default=1.0)
 
     # PU
     boolean_flag(parser, 'use_purl', default=False)

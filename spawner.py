@@ -3,7 +3,7 @@ from copy import deepcopy
 import os
 import os.path as osp
 import numpy as np
-from subprocess import check_output
+import subprocess
 import yaml
 
 from helpers import logger
@@ -209,6 +209,7 @@ def get_hps(sweep):
             'real_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
                                               '"none"']),
+            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
@@ -268,6 +269,7 @@ def get_hps(sweep):
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
+            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
@@ -407,7 +409,8 @@ def run(args):
             f.write(job)
         if args.call and not CLUSTER == 'local':
             # Spawn the job!
-            check_output(["sbatch", job_name])
+            stdout = subprocess.run(["sbatch", job_name]).stdout
+            logger.info("[STDOUT]\n{}".format(stdout))
             logger.info(">>>>>>>>>>>>>>>>>>>> Job #{} submitted.".format(i))
     # Summarize the number of jobs spawned
     logger.info(">>>>>>>>>>>>>>>>>>>> {} jobs were spawned.".format(len(jobs)))
@@ -434,7 +437,8 @@ def run(args):
             yaml.dump(yaml_content, f, default_flow_style=False)
         if args.call:
             # Spawn all the jobs in the tmux session!
-            check_output(["tmuxp", "load", "-d", "{}".format(job_config)])
+            stdout = subprocess.run(["tmuxp", "load", "-d", "{}".format(job_config)]).stdout
+            logger.info("[STDOUT]\n{}".format(stdout))
 
 
 if __name__ == "__main__":
