@@ -415,7 +415,7 @@ class LargeImpalaCNN(nn.Module):
 def perception_stack_parser(x):
     if x == 'shallow_mlp':
         return (lambda u, v: ShallowMLP(u, v, hidsize=100, extrahid=False)), 100
-    elif x == 'skip_shallow_mlp':
+    elif x == 'shallow_mlp_2':
         return (lambda u, v: ShallowMLP(u, v, hidsize=100, extrahid=True)), 100
     elif x == 'teeny_tiny_cnn':
         return (lambda u, v: TeenyTinyCNN(u, v)), 64
@@ -461,7 +461,7 @@ class GaussPolicy(nn.Module):
                 ]))),
             ]))
             self.v_head = nn.Linear(fc_in, 1)
-        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+        if self.hps.kye_p_binning or self.hps.kye_p_regress:
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(fc_in, fc_in)),
@@ -470,14 +470,14 @@ class GaussPolicy(nn.Module):
                 ]))),
             ]))
             self.r_skip_co = nn.Sequential()
-            self.r_head = nn.Linear(fc_in, 3 if self.hps.binned_aux_loss else 1)  # bins
+            self.r_head = nn.Linear(fc_in, 3 if self.hps.kye_p_binning else 1)  # bins
         # Perform initialization
         self.p_decoder.apply(init(weight_scale=5./3.))
         self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
             self.v_decoder.apply(init(weight_scale=5./3.))
             self.v_head.apply(init(weight_scale=0.01))
-        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+        if self.hps.kye_p_binning or self.hps.kye_p_regress:
             self.r_decoder.apply(init(weight_scale=5./3.))
             self.r_head.apply(init(weight_scale=0.01))
 
@@ -517,8 +517,8 @@ class GaussPolicy(nn.Module):
         else:
             raise ValueError("should not be called")
 
-    def ss_aux_loss(self, ob):
-        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+    def auxo(self, ob):
+        if self.hps.kye_p_binning or self.hps.kye_p_regress:
             out = self.forward(ob)
             return out[3] if self.hps.shared_value else out[2]  # aux
         else:
@@ -533,9 +533,9 @@ class GaussPolicy(nn.Module):
         if self.hps.shared_value:
             value = self.v_head(self.v_decoder(x))
             out.append(value)
-        if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
+        if self.hps.kye_p_binning or self.hps.kye_p_regress:
             aux = self.r_head(self.r_decoder(x))
-            if self.hps.binned_aux_loss:
+            if self.hps.kye_p_binning:
                 aux = F.log_softmax(aux, dim=1).exp()
             out.append(aux)
         return out
@@ -669,16 +669,16 @@ class Discriminator(nn.Module):
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', U.spectral_norm(nn.Linear(in_dim, 100))),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+                ('nl', nn.Tanh()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', U.spectral_norm(nn.Linear(100, 100))),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
+                ('nl', nn.Tanh()),
             ]))),
         ]))
         self.score_head = nn.Linear(100, 1)
         # Perform initialization
-        self.score_trunk.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.score_trunk.apply(init(weight_scale=5./3.))
         self.score_head.apply(init())
 
     def D(self, ob, ac):
@@ -690,3 +690,69 @@ class Discriminator(nn.Module):
         x = self.score_trunk(x)
         score = self.score_head(x)
         return score  # no sigmoid here
+
+
+class KYEDiscriminator(nn.Module):
+
+    def __init__(self, env, hps):
+        super(KYEDiscriminator, self).__init__()
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
+        self.hps = hps
+        # Define observation whitening
+        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.ob_encoder = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', U.spectral_norm(nn.Linear(ob_dim, 100))),
+                ('nl', nn.Tanh()),
+            ]))),
+        ]))
+        if not self.hps.state_only:
+            self.ac_encoder = nn.Sequential(OrderedDict([
+                ('fc_block', nn.Sequential(OrderedDict([
+                    ('fc', U.spectral_norm(nn.Linear(ac_dim, 100))),
+                    ('nl', nn.Tanh()),
+                ]))),
+            ]))
+        self.score_trunk = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', U.spectral_norm(nn.Linear(100 if self.hps.state_only else 200, 100))),
+                ('nl', nn.Tanh()),
+            ]))),
+        ]))
+        self.aux_trunk = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', U.spectral_norm(nn.Linear(100, 100))),
+                ('nl', nn.Tanh()),
+            ]))),
+        ]))
+        self.score_head = nn.Linear(100, 1)
+        self.aux_head = nn.Linear(100, ac_dim)
+        # Perform initialization
+        self.ob_encoder.apply(init(weight_scale=5./3.))
+        if not self.hps.state_only:
+            self.ac_encoder.apply(init(weight_scale=5./3.))
+        self.score_trunk.apply(init(weight_scale=5./3.))
+        self.aux_trunk.apply(init(weight_scale=5./3.))
+        self.score_head.apply(init(weight_scale=0.01))
+        self.aux_head.apply(init(weight_scale=0.01))
+
+    def D(self, ob, ac):
+        out = self.forward(ob, ac)
+        return out[0]  # score
+
+    def auxo(self, ob, ac):
+        out = self.forward(ob, ac)
+        return out[1]  # aux
+
+    def forward(self, ob, ac):
+        ob = self.rms_obs.standardize(ob)
+        ob_emb = self.ob_encoder(ob)
+        if self.hps.state_only:
+            score = self.score_head(self.score_trunk(ob_emb))
+        else:
+            ac_emb = self.ac_encoder(ac)
+            score = self.score_head(self.score_trunk(torch.cat([ob_emb, ac_emb], dim=-1)))
+        # Careful, no sigmoid here
+        aux = self.aux_head(self.aux_trunk(ob_emb))
+        return score, aux

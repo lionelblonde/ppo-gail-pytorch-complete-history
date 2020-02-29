@@ -52,15 +52,12 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--eps', help='ppo ratio clipping value', type=float, default=0.2)
     parser.add_argument('--baseline_scale', type=float, default=0.5)
     parser.add_argument('--p_ent_reg_scale', help='p entropy reg coeff', type=float, default=0.)
-    boolean_flag(parser, 'binned_aux_loss', default=False)
-    boolean_flag(parser, 'squared_aux_loss', default=False)
-    parser.add_argument('--ss_aux_loss_scale', type=float, default=0.1)
 
     # Adversarial imitation
     parser.add_argument('--d_lr', type=float, default=3e-4)
     boolean_flag(parser, 'state_only', default=False)
     boolean_flag(parser, 'minimax_only', default=True)
-    parser.add_argument('--d_ent_reg_scale', help='d entropy reg coeff', type=float, default=0.)
+    parser.add_argument('--d_ent_reg_scale', help='d entropy reg coeff', type=float, default=0.001)
     parser.add_argument('--d_update_ratio', type=int, default=5,
                         help='number of discriminator update per generator update')
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
@@ -69,6 +66,14 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
     parser.add_argument('--syn_rew_scale', type=float, default=1.0)
+
+    # KYE
+    boolean_flag(parser, 'kye_p_binning', default=False)
+    boolean_flag(parser, 'kye_p_regress', default=False)
+    parser.add_argument('--kye_p_scale', type=float, default=0.1)
+    boolean_flag(parser, 'kye_d_regress', default=False)
+    parser.add_argument('--kye_d_scale', type=float, default=0.1)
+    boolean_flag(parser, 'kye_mixing', default=True)
 
     # PU
     boolean_flag(parser, 'use_purl', default=False)

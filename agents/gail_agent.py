@@ -12,7 +12,7 @@ from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root
-from agents.nets import GaussPolicy, Value, Discriminator
+from agents.nets import GaussPolicy, Value, Discriminator, KYEDiscriminator
 from agents.gae import gae
 
 
@@ -46,7 +46,10 @@ class GAILAgent(object):
         if not self.hps.shared_value:
             self.value = Value(self.env, self.hps).to(self.device)
             sync_with_root(self.value)
-        self.discriminator = Discriminator(self.env, self.hps).to(self.device)
+        if self.hps.kye_d_regress:
+            self.discriminator = KYEDiscriminator(self.env, self.hps).to(self.device)
+        else:
+            self.discriminator = Discriminator(self.env, self.hps).to(self.device)
         sync_with_root(self.discriminator)
 
         # Set up demonstrations dataset
@@ -195,31 +198,39 @@ class GAILAgent(object):
                 else:
                     p_loss = clip_loss + entropy_loss
 
-                # Self-supervised auxiliary loss
-                if self.hps.binned_aux_loss:
-                    expert_batch = next(iter(self.e_dataloader))
-                    ss_aux_loss_p = F.cross_entropy(
-                        input=self.policy.ss_aux_loss(state),
-                        target=self.get_reward(state,
-                                               action,
-                                               next_state)[1]
-                    )
-                    ss_aux_loss_e = F.cross_entropy(
-                        input=self.policy.ss_aux_loss(expert_batch['obs0']),
-                        target=self.get_reward(expert_batch['obs0'],
-                                               expert_batch['acs'],
-                                               expert_batch['obs1'])[1]
-                    )
-                    ss_aux_loss = ss_aux_loss_p + ss_aux_loss_e
-                elif self.hps.squared_aux_loss:
-                    ss_aux_loss = F.mse_loss(
-                        input=self.policy.ss_aux_loss(state),
-                        target=self.get_reward(state, action, next_state)[0]
-                    )
-                if self.hps.binned_aux_loss or self.hps.squared_aux_loss:
-                    ss_aux_loss *= self.hps.ss_aux_loss_scale
+                if self.hps.kye_p_binning or self.hps.kye_p_regress:
+                    # Create and add auxiliary loss
+                    if self.hps.kye_p_binning:
+                        aux_loss = F.cross_entropy(
+                            input=self.policy.auxo(state),
+                            target=self.get_reward(state,
+                                                   action,
+                                                   next_state)[1]
+                        )
+                        if self.hps.kye_mixing:
+                            expert_batch = next(iter(self.e_dataloader))
+                            aux_loss += F.cross_entropy(
+                                input=self.policy.auxo(expert_batch['obs0']),
+                                target=self.get_reward(expert_batch['obs0'],
+                                                       expert_batch['acs'],
+                                                       expert_batch['obs1'])[1]
+                            )
+                    elif self.hps.kye_p_regress:
+                        aux_loss = F.smooth_l1_loss(
+                            input=self.policy.auxo(state),
+                            target=self.get_reward(state, action, next_state)[0]
+                        )
+                        if self.hps.kye_mixing:
+                            expert_batch = next(iter(self.e_dataloader))
+                            aux_loss += F.smooth_l1_loss(
+                                input=self.policy.auxo(expert_batch['obs0']),
+                                target=self.get_reward(expert_batch['obs0'],
+                                                       expert_batch['acs'],
+                                                       expert_batch['obs1'])[0]
+                            )
+                    aux_loss *= self.hps.kye_p_scale
                     # Add to policy loss
-                    p_loss += ss_aux_loss
+                    p_loss += aux_loss
 
                 # Update parameters
                 self.p_optimizer.zero_grad()
@@ -283,7 +294,7 @@ class GAILAgent(object):
         if self.hps.use_purl:
             # Create positive-unlabeled binary classification (cross-entropy) losses
             beta = 0.0  # hard-coded, using standard value from the original paper
-            p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-12)
+            p_e_loss = -self.hps.purl_eta * torch.log(1. - torch.sigmoid(e_scores) + 1e-8)
             p_e_loss += -torch.max(-beta * torch.ones_like(p_scores),
                                    (F.logsigmoid(e_scores) -
                                     (self.hps.purl_eta * F.logsigmoid(p_scores))))
@@ -307,6 +318,20 @@ class GAILAgent(object):
             grad_pen_in = [p_state, p_action, e_state, e_action]
             grad_pen = 10. * self.grad_pen(*grad_pen_in)
             d_loss += grad_pen
+
+        if self.hps.kye_d_regress:
+            # Create and add auxiliary loss
+            aux_loss = F.smooth_l1_loss(
+                input=self.discriminator.auxo(p_state, p_action),
+                target=self.policy.sample(p_state)
+            )
+            if self.hps.kye_mixing:
+                aux_loss += F.smooth_l1_loss(
+                    input=self.discriminator.auxo(e_state, e_action),
+                    target=self.policy.sample(e_state)
+                )
+            aux_loss *= self.hps.kye_d_scale
+            d_loss += aux_loss
 
         # Update parameters
         self.d_optimizer.zero_grad()
@@ -375,7 +400,7 @@ class GAILAgent(object):
             non_satur_reward = F.logsigmoid(score)
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
-            reward = non_satur_reward + minimax_reward
+            reward = (0.25 * non_satur_reward) + (0.75 * minimax_reward)
         # Perform binning
         num_bins = 3  # arbitrarily
         binned = (torch.abs(sigscore - 1e-8) // (1 / num_bins)).long().squeeze(-1)

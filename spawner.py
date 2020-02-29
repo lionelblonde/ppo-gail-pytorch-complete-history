@@ -35,22 +35,23 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'binned_aux_loss', 'squared_aux_loss',
-             'render', 'record', 'with_scheduler', 'shared_value',
+BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'shared_value',
              'state_only', 'minimax_only', 'grad_pen',
+             'kye_p_binning', 'kye_p_regress', 'kye_d_regress', 'kye_mixing',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     TOC = {'debug': ['Hopper-v3'],
+           'flareon': ['Hopper-v3',
+                       'Walker2d-v3'],
            'easy': ['InvertedPendulum-v2',
                     'InvertedDoublePendulum-v2'],
            'hard': ['Hopper-v3',
                     'Walker2d-v3',
                     'HalfCheetah-v3',
-                    'Ant-v3',
-                    'Humanoid-v3']
+                    'Ant-v3']
            }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['hard']
@@ -192,16 +193,13 @@ def get_hps(sweep):
             'eps': np.random.choice([0.1, 0.2, 0.4]),
             'baseline_scale': float(np.random.choice([0.1, 0.3, 0.5])),
             'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
-            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
-            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
-            'ss_aux_loss_scale': np.random.choice([0.001, 0.01, 0.1]),
 
             # Adversarial imitation
             'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
-            'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.),
-            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
+            'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.001),
+            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 1),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
@@ -210,6 +208,14 @@ def get_hps(sweep):
                                               '"soft_labels_0.1"',
                                               '"none"']),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
+
+            # KYE
+            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
+            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
+            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
+            'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
@@ -256,20 +262,25 @@ def get_hps(sweep):
             'eps': CONFIG['parameters'].get('eps', 0.2),
             'baseline_scale': float(CONFIG['parameters'].get('baseline_scale', 0.5)),
             'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
-            'binned_aux_loss': CONFIG['parameters'].get('binned_aux_loss', False),
-            'squared_aux_loss': CONFIG['parameters'].get('squared_aux_loss', False),
-            'ss_aux_loss_scale': CONFIG['parameters'].get('ss_aux_loss_scale', 0.1),
 
             # Adversarial imitation
             'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
-            'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.),
-            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 2),
+            'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.001),
+            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 1),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
+
+            # KYE
+            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
+            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p_scale': CONFIG['parameters'].get('kye_p_scale', 0.1),
+            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
+            'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
