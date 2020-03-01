@@ -53,7 +53,10 @@ class GAILAgent(object):
         sync_with_root(self.discriminator)
 
         # Set up demonstrations dataset
-        self.e_dataloader = DataLoader(self.expert_dataset, self.hps.batch_size, shuffle=True)
+        self.e_dataloader = DataLoader(self.expert_dataset,
+                                       self.hps.batch_size,
+                                       shuffle=True,
+                                       drop_last=True)
 
         # Set up the optimizers
         self.p_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.hps.p_lr)
@@ -134,30 +137,36 @@ class GAILAgent(object):
         logp = logp.cpu().detach().numpy().flatten()
         return ac, v, logp
 
-    def train(self, rollout, iters_so_far):
+    def train(self, p_rollout, d_rollout, iters_so_far):
         """Train the agent"""
 
         # Augment `rollout` with GAE (Generalized Advantage Estimation), which among
         # other things adds the GAE estimate of the MC estimate of the return
-        gae(rollout, self.hps.gamma, self.hps.gae_lambda, rew_key='syn_rews')
+        gae(p_rollout, self.hps.gamma, self.hps.gae_lambda, rew_key='syn_rews')
 
         # Standardize advantage function estimate
-        rollout['advs'] = ((rollout['advs'] - rollout['advs'].mean()) /
-                           (rollout['advs'].std() + 1e-8))
+        p_rollout['advs'] = ((p_rollout['advs'] - p_rollout['advs'].mean()) /
+                             (p_rollout['advs'].std() + 1e-8))
 
-        # Create DataLoader object to iterate over transitions in rollouts
-        dataset = Dataset({k: rollout[k] for k in ['obs0',
-                                                   'obs1',
-                                                   'acs',
-                                                   'logps',
-                                                   'vs',
-                                                   'advs',
-                                                   'td_lam_rets']})
-        p_dataloader = DataLoader(dataset, self.hps.batch_size, shuffle=True)
+        # Create DataLoader objects to iterate over transitions in rollouts
+        p_keys = ['obs0', 'obs1', 'acs', 'logps', 'vs', 'advs', 'td_lam_rets']
+        p_dataset = Dataset({k: p_rollout[k] for k in p_keys})
+        p_dataloader = DataLoader(p_dataset,
+                                  self.hps.batch_size,
+                                  shuffle=True,
+                                  drop_last=True)
+        d_keys = ['obs0', 'obs1', 'acs']
+        d_dataset = Dataset({k: d_rollout[k] for k in d_keys})
+        d_dataloader = DataLoader(d_dataset,
+                                  self.hps.batch_size,
+                                  shuffle=True,
+                                  drop_last=True)
 
         for _ in range(self.hps.optim_epochs_per_iter):
 
             for chunk in p_dataloader:
+
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Optimize policy.
 
                 # Transfer to device
                 state = chunk['obs0'].to(self.device)
@@ -198,40 +207,6 @@ class GAILAgent(object):
                 else:
                     p_loss = clip_loss + entropy_loss
 
-                if self.hps.kye_p_binning or self.hps.kye_p_regress:
-                    # Create and add auxiliary loss
-                    if self.hps.kye_p_binning:
-                        aux_loss = F.cross_entropy(
-                            input=self.policy.auxo(state),
-                            target=self.get_reward(state,
-                                                   action,
-                                                   next_state)[1]
-                        )
-                        if self.hps.kye_mixing:
-                            expert_batch = next(iter(self.e_dataloader))
-                            aux_loss += F.cross_entropy(
-                                input=self.policy.auxo(expert_batch['obs0']),
-                                target=self.get_reward(expert_batch['obs0'],
-                                                       expert_batch['acs'],
-                                                       expert_batch['obs1'])[1]
-                            )
-                    elif self.hps.kye_p_regress:
-                        aux_loss = F.smooth_l1_loss(
-                            input=self.policy.auxo(state),
-                            target=self.get_reward(state, action, next_state)[0]
-                        )
-                        if self.hps.kye_mixing:
-                            expert_batch = next(iter(self.e_dataloader))
-                            aux_loss += F.smooth_l1_loss(
-                                input=self.policy.auxo(expert_batch['obs0']),
-                                target=self.get_reward(expert_batch['obs0'],
-                                                       expert_batch['acs'],
-                                                       expert_batch['obs1'])[0]
-                            )
-                    aux_loss *= self.hps.kye_p_scale
-                    # Add to policy loss
-                    p_loss += aux_loss
-
                 # Update parameters
                 self.p_optimizer.zero_grad()
                 p_loss.backward()
@@ -246,10 +221,87 @@ class GAILAgent(object):
                     average_gradients(self.value, self.device)
                     self.v_optimizer.step()
 
+            if self.hps.kye_p_binning or self.hps.kye_p_regress:
+
+                for chunk in d_dataloader:
+
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Optimize policy for aux tasks.
+
+                    # Transfer to device
+                    state = chunk['obs0'].to(self.device)
+                    _state = state[:, 0:-1] if self.hps.wrap_absorb else state
+                    next_state = chunk['obs1'].to(self.device)
+                    action = chunk['acs'].to(self.device)
+
+                    if self.hps.kye_mixing:
+                        # Get a minibatch of expert data
+                        expert_batch = next(iter(self.e_dataloader))
+                        # Unpack
+                        inpt_eb_obs0 = expert_batch['obs0']
+                        targ_eb_obs0 = expert_batch['obs0']
+                        targ_eb_acs = expert_batch['acs']
+                        targ_eb_obs1 = expert_batch['obs1']
+                        if self.hps.wrap_absorb:
+                            inpt_eb_obs0 = inpt_eb_obs0[:, 0:-1]
+
+                    if self.hps.kye_p_binning:
+                        aux_loss = F.cross_entropy(
+                            input=self.policy.auxo(_state),
+                            target=self.get_reward(state, action, next_state)[1]
+                        )
+                        if self.hps.kye_mixing:
+                            aux_loss += F.cross_entropy(
+                                input=self.policy.auxo(inpt_eb_obs0),
+                                target=self.get_reward(targ_eb_obs0,
+                                                       targ_eb_acs,
+                                                       targ_eb_obs1)[1]
+                            )
+                    elif self.hps.kye_p_regress:
+                        aux_loss = F.smooth_l1_loss(
+                            input=self.policy.auxo(_state),
+                            target=self.get_reward(state, action, next_state)[0]
+                        )
+                        if self.hps.kye_mixing:
+
+                            aux_loss += F.smooth_l1_loss(
+                                input=self.policy.auxo(inpt_eb_obs0),
+                                target=self.get_reward(targ_eb_obs0,
+                                                       targ_eb_acs,
+                                                       targ_eb_obs1)[0]
+                            )
+                    aux_loss *= self.hps.kye_p_scale
+
+                    # Update parameters
+                    self.p_optimizer.zero_grad()
+                    aux_loss.backward()
+                    average_gradients(self.policy, self.device)
+                    if self.hps.clip_norm > 0:
+                        U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
+                    self.p_optimizer.step()
+                    self.scheduler.step(iters_so_far)
+
         for _ in range(self.hps.d_update_ratio):
-            for p_chunk, e_chunk in zip(p_dataloader, self.e_dataloader):
-                self.discriminator.rms_obs.update(torch.cat([p_chunk['obs0'],
-                                                             e_chunk['obs0']], dim=0))
+
+            for p_chunk, e_chunk in zip(d_dataloader, self.e_dataloader):
+
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Optimize discriminator.
+
+                if self.hps.wrap_absorb:
+                    up_obs0 = torch.cat([p_chunk['obs0'],
+                                         e_chunk['obs0']], dim=0)
+                    non_absorbing_rows = []
+                    for j, row in enumerate([up_obs0[i, :] for i in range(up_obs0.shape[0])]):
+                        if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
+                                                              torch.Tensor([1.])], dim=-1))):
+                            # logger.info("[INFO] removing absorbing row (#{})".format(j))
+                            pass
+                        else:
+                            non_absorbing_rows.append(j)
+                    up_obs0 = up_obs0[non_absorbing_rows, 0:-1]
+                else:
+                    up_obs0 = torch.cat([p_chunk['obs0'],
+                                         e_chunk['obs0']], dim=0)
+                self.discriminator.rms_obs.update(up_obs0)
                 p_e_loss = self.update_disc(p_chunk, e_chunk)
 
         # Aggregate the elements to return
@@ -321,14 +373,15 @@ class GAILAgent(object):
 
         if self.hps.kye_d_regress:
             # Create and add auxiliary loss
+            _p_state = p_state[:, 0:-1] if self.hps.wrap_absorb else p_state
             aux_loss = F.smooth_l1_loss(
                 input=self.discriminator.auxo(p_state, p_action),
-                target=self.policy.sample(p_state)
+                target=self.policy.sample(_p_state)
             )
             if self.hps.kye_mixing:
                 aux_loss += F.smooth_l1_loss(
                     input=self.discriminator.auxo(e_state, e_action),
-                    target=self.policy.sample(e_state)
+                    target=self.policy.sample(_p_state)
                 )
             aux_loss *= self.hps.kye_d_scale
             d_loss += aux_loss
@@ -345,8 +398,14 @@ class GAILAgent(object):
         but empirically useful in JS-GANs (Lucic et al. 2017)) and later in (Karol et al. 2018).
         """
         # Assemble interpolated state-action pair
-        ob_eps = torch.rand(self.ob_dim).to(p_ob.device)
-        ac_eps = torch.rand(self.ac_dim).to(p_ob.device)
+        if self.hps.wrap_absorb:
+            ob_dim = self.ob_dim + 1
+            ac_dim = self.ac_dim + 1
+        else:
+            ob_dim = self.ob_dim
+            ac_dim = self.ac_dim
+        ob_eps = torch.rand(ob_dim).to(p_ob.device)
+        ac_eps = torch.rand(ac_dim).to(p_ob.device)
         ob_interp = ob_eps * p_ob + ((1. - ob_eps) * e_ob)
         ac_interp = ac_eps * p_ac + ((1. - ac_eps) * e_ac)
         # Set `requires_grad=True` to later have access to
@@ -388,7 +447,7 @@ class GAILAgent(object):
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
         # e.g. walking simulations that get cut off when the robot falls over
-        minimax_reward = -torch.log(1. - torch.sigmoid(score) + 1e-12)
+        minimax_reward = -torch.log(1. - torch.sigmoid(score) + 1e-8)
         if self.hps.minimax_only:
             reward = minimax_reward
         else:
@@ -400,7 +459,7 @@ class GAILAgent(object):
             non_satur_reward = F.logsigmoid(score)
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
-            reward = (0.25 * non_satur_reward) + (0.75 * minimax_reward)
+            reward = non_satur_reward + minimax_reward
         # Perform binning
         num_bins = 3  # arbitrarily
         binned = (torch.abs(sigscore - 1e-8) // (1 / num_bins)).long().squeeze(-1)

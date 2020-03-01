@@ -525,7 +525,7 @@ class GaussPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.).float()
+        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.perception_stack(ob)
         ac_mean = self.p_head(self.p_decoder(x))
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
@@ -615,7 +615,7 @@ class CatPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.).float()
+        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.perception_stack(ob)
         ac_logits = self.p_head(self.p_decoder(x))
         out = [ac_logits]
@@ -648,7 +648,8 @@ class Value(nn.Module):
         self.v_head.apply(init(weight_scale=0.01))
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.).float()
+        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        x = self.perception_stack(ob)
         x = self.perception_stack(ob)
         value = self.v_head(self.v_decoder(x))
         return value
@@ -660,8 +661,10 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
+        if hps.wrap_absorb:
+            ob_dim += 1
+            ac_dim += 1
         self.hps = hps
-        self.leak = 0.1
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define the input dimension, depending on whether actions are used too.
@@ -685,7 +688,12 @@ class Discriminator(nn.Module):
         return self.forward(ob, ac)
 
     def forward(self, ob, ac):
-        ob = self.rms_obs.standardize(ob)
+        if self.hps.wrap_absorb:
+            ob_ = ob.clone()[:, 0:-1]
+            ob_ = torch.clamp(self.rms_obs.standardize(ob_), -5., 5.)
+            ob = torch.cat([ob_, ob[:, -1].unsqueeze(-1)], dim=-1)
+        else:
+            ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = ob if self.hps.state_only else torch.cat([ob, ac], dim=-1)
         x = self.score_trunk(x)
         score = self.score_head(x)
@@ -698,6 +706,9 @@ class KYEDiscriminator(nn.Module):
         super(KYEDiscriminator, self).__init__()
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
+        if hps.wrap_absorb:
+            ob_dim += 1
+            ac_dim += 1
         self.hps = hps
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
@@ -727,7 +738,7 @@ class KYEDiscriminator(nn.Module):
             ]))),
         ]))
         self.score_head = nn.Linear(100, 1)
-        self.aux_head = nn.Linear(100, ac_dim)
+        self.aux_head = nn.Linear(100, env.action_space.shape[0])  # always original ac_dim
         # Perform initialization
         self.ob_encoder.apply(init(weight_scale=5./3.))
         if not self.hps.state_only:
@@ -746,7 +757,12 @@ class KYEDiscriminator(nn.Module):
         return out[1]  # aux
 
     def forward(self, ob, ac):
-        ob = self.rms_obs.standardize(ob)
+        if self.hps.wrap_absorb:
+            ob_ = ob.clone()[:, 0:-1]
+            ob_ = torch.clamp(self.rms_obs.standardize(ob_), -5., 5.)
+            ob = torch.cat([ob_, ob[:, -1].unsqueeze(-1)], dim=-1)
+        else:
+            ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         ob_emb = self.ob_encoder(ob)
         if self.hps.state_only:
             score = self.score_head(self.score_trunk(ob_emb))

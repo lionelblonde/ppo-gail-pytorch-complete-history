@@ -36,7 +36,7 @@ CONDA = CONFIG['resources']['conda_env']
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
 BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'shared_value',
-             'state_only', 'minimax_only', 'grad_pen',
+             'state_only', 'minimax_only', 'grad_pen', 'wrap_absorb',
              'kye_p_binning', 'kye_p_regress', 'kye_d_regress', 'kye_mixing',
              'use_purl']
 
@@ -208,6 +208,7 @@ def get_hps(sweep):
                                               '"soft_labels_0.1"',
                                               '"none"']),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
+            'wrap_absorb': CONFIG['parameters']['wrap_absorb'],
 
             # KYE
             'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
@@ -273,6 +274,7 @@ def get_hps(sweep):
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
+            'wrap_absorb': CONFIG['parameters']['wrap_absorb'],
 
             # KYE
             'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),

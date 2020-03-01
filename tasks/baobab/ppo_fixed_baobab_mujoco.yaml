@@ -1,0 +1,45 @@
+name: 'training spawner with single fixed hp set'
+
+resources:
+  conda_env: 'pytorch'
+  wandb_project: 'jolteon'
+  cluster: 'baobab'
+
+logging:
+  checkpoint_dir: 'data/checkpoints'
+  log_dir: 'data/logs'
+  record: false
+
+parameters:
+  # Generic
+  task: 'train'
+  algo: 'ppo'
+  cuda: false
+  num_seeds: 5
+  benchmark: 'mujoco'
+
+  # Training
+  save_frequency: 1000
+  num_timesteps: 1e7
+  eval_steps_per_iter: 10
+  eval_frequency: 10
+
+  # Model
+  perception_stack: 'shallow_mlp'
+  shared_value: true
+
+  # Optimization
+  p_lr: 3e-4
+  with_scheduler: true
+  clip_norm: 0.
+
+  # Algorithm
+  rollout_len: 2048
+  optim_epochs_per_iter: 10
+  batch_size: 128
+  gamma: 0.99
+  gae_lambda: 0.95
+  eps: 0.2
+  baseline_scale: 0.1
+  p_ent_reg_scale: 0.
+

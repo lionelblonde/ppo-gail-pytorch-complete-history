@@ -66,6 +66,7 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
     parser.add_argument('--syn_rew_scale', type=float, default=1.0)
+    boolean_flag(parser, 'wrap_absorb', default=False)
 
     # KYE
     boolean_flag(parser, 'kye_p_binning', default=False)
