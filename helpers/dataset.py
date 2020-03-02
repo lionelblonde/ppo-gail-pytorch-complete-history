@@ -84,27 +84,54 @@ class DemoDataset(Dataset):
 
             # Collect the demo's content
             if wrap_absorb:
-                self.data['obs0'].append(np.concatenate([tmp['obs0'],
-                                                         np.zeros((ep_len, 1))], axis=-1))
-                self.data['acs'].append(np.concatenate([tmp['acs'],
-                                                        np.zeros((ep_len, 1))], axis=-1))
-                self.data['iws'].append(np.ones_like(tmp['obs0']))
                 if tmp['dones1'][-1] and terminal:
                     # If the last subsampled transition is done, then it must be
                     # the very last transition of the episode, and testing whether it is
                     # a true terminal state is given by 'terminal' determined above.
                     logger.info("[INFO] >>>> wrapping with absorbing transition <<<<")
                     # Wrap with an absorbing state
-                    self.data['obs1'].append(np.concatenate([np.zeros_like(tmp['obs1']),
-                                                             np.ones((ep_len, 1))], axis=-1))
+                    obs0 = np.concatenate(
+                        [tmp['obs0'],
+                         np.zeros((ep_len, 1))],
+                        axis=-1
+                    )
+                    acs = np.concatenate(
+                        [tmp['acs'],
+                         np.zeros((ep_len, 1))],
+                        axis=-1
+                    )
+                    obs1 = np.concatenate(
+                        [tmp['obs1'],
+                         np.concatenate(
+                            [np.zeros((ep_len - 1, 1)),
+                             np.ones((1, 1))],
+                            axis=0)],
+                        axis=-1
+                    )
                     # Add absorbing transition
-                    self.data['obs0'].append(np.concatenate([np.zeros_like(tmp['obs0']),
-                                                             np.ones((ep_len, 1))], axis=-1))
-                    self.data['acs'].append(np.concatenate([np.zeros_like(tmp['acs']),
-                                                            np.ones((ep_len, 1))], axis=-1))
-                    self.data['obs1'].append(np.concatenate([np.zeros_like(tmp['obs1']),
-                                                             np.ones((ep_len, 1))], axis=-1))
+                    obs0 = np.concatenate(
+                        [obs0,
+                         np.expand_dims(np.append(np.zeros_like(tmp['obs0'][-1]), 1), axis=0)],
+                        axis=0
+                    )
+                    acs = np.concatenate(
+                        [acs,
+                         np.expand_dims(np.append(np.zeros_like(tmp['acs'][-1]), 1), axis=0)],
+                        axis=0
+                    )
+                    obs1 = np.concatenate(
+                        [obs1,
+                         np.expand_dims(np.append(np.zeros_like(tmp['obs1'][-1]), 1), axis=0)],
+                        axis=0
+                    )
+                    self.data['obs0'].append(obs0)
+                    self.data['acs'].append(acs)
+                    self.data['obs1'].append(obs1)
                 else:
+                    self.data['obs0'].append(np.concatenate([tmp['obs0'],
+                                                             np.zeros((ep_len, 1))], axis=-1))
+                    self.data['acs'].append(np.concatenate([tmp['acs'],
+                                                            np.zeros((ep_len, 1))], axis=-1))
                     self.data['obs1'].append(np.concatenate([tmp['obs1'],
                                                              np.zeros((ep_len, 1))], axis=-1))
             else:
@@ -117,7 +144,6 @@ class DemoDataset(Dataset):
             self.stats[k] = np.array(v)
         for k, v in self.data.items():
             self.data[k] = np.concatenate(v, axis=0)
-            print(self.data[k].shape)
 
         # Log demos' statistics
         logger.info("[INFO] keys extracted: {}".format(list(self.data.keys())))
