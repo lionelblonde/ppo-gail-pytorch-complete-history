@@ -2,7 +2,7 @@ import time
 from copy import deepcopy
 import os
 import os.path as osp
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import wandb
 import numpy as np
@@ -135,29 +135,7 @@ def gail_rollout_generator(env, agent, rollout_len):
             ac = ac if isinstance(ac, int) else np.asscalar(ac)
 
         if t > 0 and t % rollout_len == 0:
-            # out = {
-            #     # Data collected during the rollout
-            #     "obs0": obs0.data.reshape(-1, *ob_shape),
-            #     "obs1": obs1.data.reshape(-1, *ob_shape),
-            #     "acs": (acs.data.reshape(-1, *((1,)
-            #             if isinstance(agent.ac_space, spaces.Discrete)
-            #             else ac_shape))),
-            #     "vs": vs.data.reshape(-1, 1),
-            #     "logps": logps.data.reshape(-1, 1),
-            #     "env_rews": env_rews.data.reshape(-1, 1),
-            #     "dones": dones.data.reshape(-1, 1),
-            #     "next_v": v * (1 - done),
-            #     # Global episodic statistics
-            #     "ep_lens": ep_lens,
-            #     "ep_env_rets": ep_env_rets,
-            # }
-            # if agent.hps.algo == 'gail':
-            #     out.update({
-            #         "syn_rews": syn_rews.data.reshape(-1, 1),
-            #         "ep_syn_rets": ep_syn_rets,
-            #     })
-            # Yield
-            # yield out
+
             for k in p_rollout.keys():
                 if k in ['obs0', 'obs1']:
                     p_rollout[k] = np.array(p_rollout[k]).reshape(-1, agent.ob_dim)
@@ -404,6 +382,8 @@ def learn(args,
 
     # Create dictionary to collect stats
     d = defaultdict(list)
+    b_roll = deque(maxlen=40)
+    b_eval = deque(maxlen=40)
 
     # Set up model save directory
     if rank == 0:
@@ -469,8 +449,11 @@ def learn(args,
             # Log interaction stats
             roll_len = mpi_mean_reduce(rollout['ep_lens'])
             roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
+            b_roll.append(roll_env_ret)
+            avg_roll_env_ret = np.mean(b_roll)
             logger.record_tabular('roll_len', roll_len)
             logger.record_tabular('roll_env_ret', roll_env_ret)
+            logger.record_tabular('avg_roll_env_ret', avg_roll_env_ret)
             if agent.hps.algo == 'gail':
                 roll_syn_ret = mpi_mean_reduce(rollout['ep_syn_rets'])
                 logger.record_tabular('roll_syn_ret', roll_syn_ret)
@@ -513,6 +496,8 @@ def learn(args,
                     # Log evaluation stats
                     eval_len = np.mean(d['eval_ep_len'])
                     eval_env_ret = np.mean(d['eval_ep_env_ret'])
+                    b_eval.append(eval_env_ret)
+                    avg_eval_env_ret = np.mean(b_eval)
                     logger.record_tabular('eval_len', eval_len)
                     logger.record_tabular('eval_env_ret', eval_env_ret)
                     logger.info("[CSV] dumping eval stats in .csv file")
@@ -538,7 +523,8 @@ def learn(args,
             wandb.log({"num_workers": np.array(world_size)})
 
             wandb.log({'roll_len': roll_len,
-                       'roll_env_ret': roll_env_ret},
+                       'roll_env_ret': roll_env_ret,
+                       'avg_roll_env_ret': avg_roll_env_ret},
                       step=timesteps_so_far)
             if agent.hps.algo == 'gail':
                 wandb.log({'roll_syn_ret': roll_syn_ret},
@@ -554,7 +540,8 @@ def learn(args,
 
             if iters_so_far % args.eval_frequency == 0:
                 wandb.log({'eval_len': eval_len,
-                           'eval_env_ret': eval_env_ret},
+                           'eval_env_ret': eval_env_ret,
+                           'avg_eval_env_ret': avg_eval_env_ret},
                           step=timesteps_so_far)
 
         # Increment counters

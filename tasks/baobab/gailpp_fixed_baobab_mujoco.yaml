@@ -59,8 +59,8 @@ parameters:
   # KYE
   kye_p_binning: false
   kye_p_regress: false
-  kye_p_scale: 0.1
-  kye_d_regress: false
+  kye_p_scale: 0.005
+  kye_d_regress: true
   kye_d_scale: 0.1
   kye_mixing: true
 

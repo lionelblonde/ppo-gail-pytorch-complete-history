@@ -51,7 +51,7 @@ parameters:
   minimax_only: true
   d_ent_reg_scale: 0.
   d_update_ratio: 1
-  grad_pen: true
+  grad_pen: false
   fake_ls_type: '"none"'
   real_ls_type: '"none"'
   syn_rew_scale: 1.

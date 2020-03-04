@@ -43,16 +43,18 @@ BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'shared_value',
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
-    TOC = {'debug': ['Hopper-v3'],
-           'flareon': ['Hopper-v3',
-                       'Walker2d-v3'],
-           'easy': ['InvertedPendulum-v2',
-                    'InvertedDoublePendulum-v2'],
-           'hard': ['Hopper-v3',
-                    'Walker2d-v3',
-                    'HalfCheetah-v3',
-                    'Ant-v3']
-           }
+    TOC = {
+        'debug': ['Hopper-v3'],
+        'flareon': ['Hopper-v3',
+                    'Walker2d-v3'],
+        'easy': ['InvertedPendulum-v2',
+                 'InvertedDoublePendulum-v2'],
+        'hard': ['Hopper-v3',
+                 'Walker2d-v3',
+                 'HalfCheetah-v3',
+                 'Ant-v3'],
+        'glaceon': ['Humanoid-v3']
+    }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['hard']
     else:
@@ -60,46 +62,53 @@ if BENCH == 'mujoco':
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
-        PEP = {'InvertedPendulum': 'shared-EL7,mono-shared-EL7',
-               'Reacher': 'shared-EL7,mono-shared-EL7',
-               'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
-               'Hopper': 'shared-EL7,mono-shared-EL7',
-               'Walker2d': 'shared-EL7,mono-shared-EL7',
-               'HalfCheetah': 'shared-EL7,mono-shared-EL7',
-               'Ant': 'shared-EL7,mono-shared-EL7',
-               'Humanoid': 'shared-EL7,mono-shared-EL7'}
+        PEP = {
+            'InvertedPendulum': 'shared-EL7,mono-shared-EL7',
+            'Reacher': 'shared-EL7,mono-shared-EL7',
+            'InvertedDoublePendulum': 'shared-EL7,mono-shared-EL7',
+            'Hopper': 'shared-EL7,mono-shared-EL7',
+            'Walker2d': 'shared-EL7,mono-shared-EL7',
+            'HalfCheetah': 'shared-EL7,mono-shared-EL7',
+            'Ant': 'shared-EL7,mono-shared-EL7',
+            'Humanoid': 'shared-EL7,mono-shared-EL7',
+        }
         # Define per-environment ntasks map
-        PEC = {'InvertedPendulum': '20',
-               'Reacher': '20',
-               'InvertedDoublePendulum': '20',
-               'Hopper': '40',
-               'Walker2d': '40',
-               'HalfCheetah': '40',
-               'Ant': '40',
-               'Humanoid': '60'}
+        PEC = {
+            'InvertedPendulum': '8',
+            'Reacher': '8',
+            'InvertedDoublePendulum': '8',
+            'Hopper': '16',
+            'Walker2d': '16',
+            'HalfCheetah': '16',
+            'Ant': '16',
+            'Humanoid': '48',
+        }
         # Define per-environment timeouts map
-        PET = {'InvertedPendulum': '0-06:00:00',
-               'Reacher': '0-06:00:00',
-               'InvertedDoublePendulum': '0-06:00:00',
-               'Hopper': '0-12:00:00',
-               'Walker2d': '0-12:00:00',
-               'HalfCheetah': '0-12:00:00',
-               'Ant': '0-12:00:00',
-               'Humanoid': '0-12:00:00'}
+        PET = {
+            'InvertedPendulum': '0-06:00:00',
+            'Reacher': '0-06:00:00',
+            'InvertedDoublePendulum': '0-06:00:00',
+            'Hopper': '0-12:00:00',
+            'Walker2d': '0-12:00:00',
+            'HalfCheetah': '0-12:00:00',
+            'Ant': '0-12:00:00',
+            'Humanoid': '0-12:00:00',
+        }
 
 elif BENCH == 'atari':
-    map_ = {'easy': ['Pong'],
-            'normal': ['Qbert',
-                       'MsPacman',
-                       'SpaceInvaders',
-                       'Frostbite',
-                       'Freeway',
-                       'BeamRider',
-                       'Asteroids'],
-            'hard_exploration': ['MontezumaRevenge',
-                                 'Pitfall',
-                                 'PrivateEye'],
-            }
+    map_ = {
+        'easy': ['Pong'],
+        'normal': ['Qbert',
+                   'MsPacman',
+                   'SpaceInvaders',
+                   'Frostbite',
+                   'Freeway',
+                   'BeamRider',
+                   'Asteroids'],
+        'hard_exploration': ['MontezumaRevenge',
+                             'Pitfall',
+                             'PrivateEye'],
+    }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['normal'] + TOC['hard_exploration']
     else:

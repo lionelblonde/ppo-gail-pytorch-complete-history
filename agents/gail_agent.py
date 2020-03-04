@@ -137,6 +137,17 @@ class GAILAgent(object):
         logp = logp.cpu().detach().numpy().flatten()
         return ac, v, logp
 
+    def remove_absorbing(self, x):
+        non_absorbing_rows = []
+        for j, row in enumerate([x[i, :] for i in range(x.shape[0])]):
+            if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
+                                                  torch.Tensor([1.]).to(self.device)], dim=-1))):
+                # logger.info("[INFO] removing absorbing row (#{})".format(j))
+                pass
+            else:
+                non_absorbing_rows.append(j)
+        return x[non_absorbing_rows, :], non_absorbing_rows
+
     def train(self, p_rollout, d_rollout, iters_so_far):
         """Train the agent"""
 
@@ -228,21 +239,34 @@ class GAILAgent(object):
                     # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Optimize policy for aux tasks.
 
                     # Transfer to device
+                    _state = chunk['obs0'].to(self.device)
                     state = chunk['obs0'].to(self.device)
-                    _state = state[:, 0:-1] if self.hps.wrap_absorb else state
                     next_state = chunk['obs1'].to(self.device)
                     action = chunk['acs'].to(self.device)
+                    if self.hps.wrap_absorb:
+                        _, indices_a = self.remove_absorbing(state)
+                        _, indices_b = self.remove_absorbing(next_state)
+                        indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
+                        _state = _state[indices, 0:-1]
+                        state = state[indices, :]
+                        next_state = next_state[indices, :]
+                        action = action[indices, :]
 
                     if self.hps.kye_mixing:
                         # Get a minibatch of expert data
                         expert_batch = next(iter(self.e_dataloader))
-                        # Unpack
-                        inpt_eb_obs0 = expert_batch['obs0']
-                        targ_eb_obs0 = expert_batch['obs0']
-                        targ_eb_acs = expert_batch['acs']
-                        targ_eb_obs1 = expert_batch['obs1']
+                        _state_e = expert_batch['obs0']
+                        state_e = expert_batch['obs0']
+                        next_state_e = expert_batch['obs1']
+                        action_e = expert_batch['acs']
                         if self.hps.wrap_absorb:
-                            inpt_eb_obs0 = inpt_eb_obs0[:, 0:-1]
+                            _, indices_a = self.remove_absorbing(state_e)
+                            _, indices_b = self.remove_absorbing(next_state_e)
+                            indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
+                            _state_e = _state_e[indices, 0:-1]
+                            state_e = state_e[indices, :]
+                            next_state_e = next_state_e[indices, :]
+                            action_e = action_e[indices, :]
 
                     if self.hps.kye_p_binning:
                         aux_loss = F.cross_entropy(
@@ -251,10 +275,8 @@ class GAILAgent(object):
                         )
                         if self.hps.kye_mixing:
                             aux_loss += F.cross_entropy(
-                                input=self.policy.auxo(inpt_eb_obs0),
-                                target=self.get_reward(targ_eb_obs0,
-                                                       targ_eb_acs,
-                                                       targ_eb_obs1)[1]
+                                input=self.policy.auxo(_state_e),
+                                target=self.get_reward(state_e, action_e, next_state_e)[1]
                             )
                     elif self.hps.kye_p_regress:
                         aux_loss = F.smooth_l1_loss(
@@ -264,10 +286,8 @@ class GAILAgent(object):
                         if self.hps.kye_mixing:
 
                             aux_loss += F.smooth_l1_loss(
-                                input=self.policy.auxo(inpt_eb_obs0),
-                                target=self.get_reward(targ_eb_obs0,
-                                                       targ_eb_acs,
-                                                       targ_eb_obs1)[0]
+                                input=self.policy.auxo(_state_e),
+                                target=self.get_reward(state_e, action_e, next_state_e)[0]
                             )
                     aux_loss *= self.hps.kye_p_scale
 
@@ -286,21 +306,9 @@ class GAILAgent(object):
 
                 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Optimize discriminator.
 
+                up_obs0 = torch.cat([p_chunk['obs0'], e_chunk['obs0']], dim=0)
                 if self.hps.wrap_absorb:
-                    up_obs0 = torch.cat([p_chunk['obs0'],
-                                         e_chunk['obs0']], dim=0)
-                    non_absorbing_rows = []
-                    for j, row in enumerate([up_obs0[i, :] for i in range(up_obs0.shape[0])]):
-                        if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
-                                                              torch.Tensor([1.])], dim=-1))):
-                            # logger.info("[INFO] removing absorbing row (#{})".format(j))
-                            pass
-                        else:
-                            non_absorbing_rows.append(j)
-                    up_obs0 = up_obs0[non_absorbing_rows, 0:-1]
-                else:
-                    up_obs0 = torch.cat([p_chunk['obs0'],
-                                         e_chunk['obs0']], dim=0)
+                    up_obs0 = self.remove_absorbing(up_obs0)[0][:, 0:-1]
                 self.discriminator.rms_obs.update(up_obs0)
                 p_e_loss = self.update_disc(p_chunk, e_chunk)
 
@@ -373,15 +381,28 @@ class GAILAgent(object):
 
         if self.hps.kye_d_regress:
             # Create and add auxiliary loss
-            _p_state = p_state[:, 0:-1] if self.hps.wrap_absorb else p_state
+            if self.hps.wrap_absorb:
+                _, p_indices = self.remove_absorbing(p_state)
+                _p_state = p_state[p_indices, 0:-1]
+                p_state = p_state[p_indices, :]
+                p_action = p_action[p_indices, :]
+            else:
+                _p_state = p_state
             aux_loss = F.smooth_l1_loss(
                 input=self.discriminator.auxo(p_state, p_action),
                 target=self.policy.sample(_p_state)
             )
             if self.hps.kye_mixing:
+                if self.hps.wrap_absorb:
+                    _, e_indices = self.remove_absorbing(e_state)
+                    _e_state = e_state[e_indices, 0:-1]
+                    e_state = e_state[e_indices, :]
+                    e_action = e_action[e_indices, :]
+                else:
+                    _e_state = e_state
                 aux_loss += F.smooth_l1_loss(
                     input=self.discriminator.auxo(e_state, e_action),
-                    target=self.policy.sample(_p_state)
+                    target=self.policy.sample(_e_state)
                 )
             aux_loss *= self.hps.kye_d_scale
             d_loss += aux_loss
@@ -459,7 +480,7 @@ class GAILAgent(object):
             non_satur_reward = F.logsigmoid(score)
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
-            reward = non_satur_reward + minimax_reward
+            reward = (0.2 * non_satur_reward) + (0.8 * minimax_reward)
         # Perform binning
         num_bins = 3  # arbitrarily
         binned = (torch.abs(sigscore - 1e-8) // (1 / num_bins)).long().squeeze(-1)
