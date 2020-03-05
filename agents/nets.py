@@ -55,6 +55,20 @@ def init(weight_scale=1., constant_bias=0.):
     return _init
 
 
+def snwrap(use_sn=False):
+    """Spectral normalization wrapper"""
+
+    def _snwrap(m):
+
+        assert isinstance(m, nn.Linear)
+        if use_sn:
+            return U.spectral_norm(m)
+        else:
+            return m
+
+    return _snwrap
+
+
 class ResBlock(nn.Module):
 
     def __init__(self, chan):
@@ -665,17 +679,18 @@ class Discriminator(nn.Module):
             ob_dim += 1
             ac_dim += 1
         self.hps = hps
+        apply_sn = snwrap(use_sn=self.hps.spectral_norm)
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define the input dimension, depending on whether actions are used too.
         in_dim = ob_dim if self.hps.state_only else ob_dim + ac_dim
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(in_dim, 100))),
+                ('fc', apply_sn(nn.Linear(in_dim, 100))),
                 ('nl', nn.Tanh()),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(100, 100))),
+                ('fc', apply_sn(nn.Linear(100, 100))),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
@@ -710,35 +725,36 @@ class KYEDiscriminator(nn.Module):
             ob_dim += 1
             ac_dim += 1
         self.hps = hps
+        apply_sn = snwrap(use_sn=self.hps.spectral_norm)
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         self.ob_encoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(ob_dim, 100))),
+                ('fc', apply_sn(nn.Linear(ob_dim, 64))),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
         if not self.hps.state_only:
             self.ac_encoder = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
-                    ('fc', U.spectral_norm(nn.Linear(ac_dim, 100))),
+                    ('fc', apply_sn(nn.Linear(ac_dim, 64))),
                     ('nl', nn.Tanh()),
                 ]))),
             ]))
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(100 if self.hps.state_only else 200, 100))),
+                ('fc', apply_sn(nn.Linear(128, 64))),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
         self.aux_trunk = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', U.spectral_norm(nn.Linear(100, 100))),
+                ('fc', apply_sn(nn.Linear(64, 64))),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
-        self.score_head = nn.Linear(100, 1)
-        self.aux_head = nn.Linear(100, env.action_space.shape[0])  # always original ac_dim
+        self.score_head = nn.Linear(64, 1)
+        self.aux_head = nn.Linear(64, env.action_space.shape[0])  # always original ac_dim
         # Perform initialization
         self.ob_encoder.apply(init(weight_scale=5./3.))
         if not self.hps.state_only:

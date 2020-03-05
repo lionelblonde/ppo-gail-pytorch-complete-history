@@ -1,4 +1,4 @@
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import os.path as osp
 
 from gym import spaces
@@ -79,8 +79,11 @@ class PPOAgent(object):
         logp = logp.cpu().detach().numpy().flatten()
         return ac, v, logp
 
-    def train(self, rollout, iters_so_far):
+    def update_policy_value(self, rollout, iters_so_far):
         """Train the agent"""
+
+        # Container for all the metrics
+        metrics = defaultdict(list)
 
         # Augment `rollout` with GAE (Generalized Advantage Estimation), which among
         # other things adds the GAE estimate of the MC estimate of the return
@@ -91,13 +94,14 @@ class PPOAgent(object):
                            (rollout['advs'].std() + 1e-8))
 
         # Create DataLoader object to iterate over transitions in rollouts
-        dataset = Dataset({k: rollout[k] for k in ['obs0',
-                                                   'acs',
-                                                   'logps',
-                                                   'vs',
-                                                   'advs',
-                                                   'td_lam_rets']})
-        dataloader = DataLoader(dataset, self.hps.batch_size, shuffle=True)
+        keys = ['obs0', 'acs', 'logps', 'vs', 'advs', 'td_lam_rets']
+        dataset = Dataset({k: rollout[k] for k in keys})
+        dataloader = DataLoader(
+            dataset,
+            self.hps.batch_size,
+            shuffle=True,
+            drop_last=False,  # no compatibility issue, only used for policy alone
+        )
 
         for _ in range(self.hps.optim_epochs_per_iter):
 
@@ -141,6 +145,15 @@ class PPOAgent(object):
                 else:
                     p_loss = clip_loss + entropy_loss
 
+                # Log metrics
+                metrics['entropy_loss'].append(entropy_loss)
+                metrics['clip_loss'].append(clip_loss)
+                metrics['kl_approx'].append(kl_approx)
+                metrics['kl_max'].append(kl_max)
+                metrics['clip_frac'].append(clip_frac)
+                metrics['v_loss'].append(v_loss)
+                metrics['p_loss'].append(p_loss)
+
                 # Update parameters
                 self.p_optimizer.zero_grad()
                 p_loss.backward()
@@ -155,18 +168,8 @@ class PPOAgent(object):
                     average_gradients(self.value, self.device)
                     self.v_optimizer.step()
 
-        # Aggregate the elements to return
-        losses = {'pol': clip_loss + entropy_loss,
-                  'val': v_loss,
-                  # Sub-losses
-                  'clip_loss': clip_loss,
-                  'entropy_loss': entropy_loss,
-                  'kl_approx': kl_approx,
-                  'kl_max': kl_max,
-                  'clip_frac': clip_frac}
-        losses = {k: v.clone().cpu().data.numpy() for k, v in losses.items()}
-
-        return losses, self.scheduler.get_last_lr()
+        metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
+        return metrics, self.scheduler.get_last_lr()
 
     def save(self, path, iters):
         SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])

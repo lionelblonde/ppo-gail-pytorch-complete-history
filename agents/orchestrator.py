@@ -434,50 +434,58 @@ def learn(args,
             agent.save(ckpt_dir, iters_so_far)
             logger.info("saving model @: {}".format(ckpt_dir))
 
-        # Sample mini-batch in env w/ perturbed actor and store transitions
-        with timed("interacting"):
-            if args.algo == 'ppo':
+        if args.algo == 'ppo':
+            with timed('interacting'):
                 rollout = roll_gen.__next__()
-            elif args.algo == 'gail':
-                # Unpack (one rollout dict for policy training, one for reward training)
-                p_rollout, d_rollout = roll_gen.__next__()
-                rollout = deepcopy(p_rollout)  # to unify the logging phase that follows
-
-            logger.info("[INFO] {} ".format("timesteps".ljust(20, '.')) +
-                        "{}".format(timesteps_so_far + args.rollout_len))
-
-            # Log interaction stats
-            roll_len = mpi_mean_reduce(rollout['ep_lens'])
-            roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
-            b_roll.append(roll_env_ret)
-            avg_roll_env_ret = np.mean(b_roll)
-            logger.record_tabular('roll_len', roll_len)
-            logger.record_tabular('roll_env_ret', roll_env_ret)
-            logger.record_tabular('avg_roll_env_ret', avg_roll_env_ret)
-            if agent.hps.algo == 'gail':
-                roll_syn_ret = mpi_mean_reduce(rollout['ep_syn_rets'])
-                logger.record_tabular('roll_syn_ret', roll_syn_ret)
-            logger.info("[CSV] dumping roll stats in .csv file")
-            logger.dump_tabular()
-
-        with timed("training"):
-            # Train the policy and value
-            if args.algo == 'ppo':
-                losses, lrnow = agent.train(
+                roll_len = mpi_mean_reduce(rollout['ep_lens'])
+                roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
+                b_roll.append(roll_env_ret)
+                avg_roll_env_ret = np.mean(b_roll)
+                logger.record_tabular('roll_len', roll_len)
+                logger.record_tabular('roll_env_ret', roll_env_ret)
+                logger.record_tabular('avg_roll_env_ret', avg_roll_env_ret)
+                logger.info("[CSV] dumping roll stats in .csv file")
+                logger.dump_tabular()
+            with timed('training'):
+                metrics, lrnow = agent.update_policy_value(
                     rollout=rollout,
                     iters_so_far=iters_so_far,
                 )
-            elif args.algo == 'gail':
-                losses, lrnow = agent.train(
-                    p_rollout=p_rollout,
-                    d_rollout=d_rollout,
-                    iters_so_far=iters_so_far,
-                )
-            # Store the losses and gradients in their respective deques
-            d['pol_losses'].append(losses['pol'])
-            d['val_losses'].append(losses['val'])
-            if agent.hps.algo == 'gail':
-                d['dis_losses'].append(losses['dis'])
+                # Log training stats
+                d['pol_losses'].append(metrics['p_loss'])
+                d['val_losses'].append(metrics['v_loss'])
+
+        elif args.algo == 'gail':
+            for _ in range(agent.hps.g_steps):
+                with timed('interacting'):
+                    # Unpack (one rollout dict for policy training, one for reward training)
+                    p_rollout, d_rollout = roll_gen.__next__()
+                    roll_len = mpi_mean_reduce(p_rollout['ep_lens'])
+                    roll_env_ret = mpi_mean_reduce(p_rollout['ep_env_rets'])
+                    b_roll.append(roll_env_ret)
+                    avg_roll_env_ret = np.mean(b_roll)
+                    logger.record_tabular('roll_len', roll_len)
+                    logger.record_tabular('roll_env_ret', roll_env_ret)
+                    logger.record_tabular('avg_roll_env_ret', avg_roll_env_ret)
+                    roll_syn_ret = mpi_mean_reduce(p_rollout['ep_syn_rets'])
+                    logger.record_tabular('roll_syn_ret', roll_syn_ret)
+                    logger.info("[CSV] dumping roll stats in .csv file")
+                    logger.dump_tabular()
+                with timed('policy and value training'):
+                    metrics, lrnow = agent.update_policy_value(
+                        p_rollout=p_rollout,
+                        d_rollout=d_rollout,
+                        iters_so_far=iters_so_far,
+                    )
+                    # Log training stats
+                    d['pol_losses'].append(metrics['p_loss'])
+                    d['val_losses'].append(metrics['v_loss'])
+            for _ in range(agent.hps.d_steps):
+                with timed('discriminator training'):
+                    metrics = agent.update_discriminator(d_rollout=d_rollout)
+                    d['dis_losses'].append(metrics['d_loss'])
+                    if agent.hps.kye_d_regress:
+                        d['angles'].append(metrics['angle'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -485,7 +493,6 @@ def learn(args,
             if iters_so_far % args.eval_frequency == 0:
 
                 with timed("evaluating"):
-
                     for eval_step in range(args.eval_steps_per_iter):
                         # Sample an episode w/ non-perturbed actor w/o storing anything
                         eval_ep = eval_ep_gen.__next__()
@@ -493,29 +500,36 @@ def learn(args,
                         d['eval_ep_len'].append(eval_ep['ep_len'])
                         d['eval_ep_env_ret'].append(eval_ep['ep_env_ret'])
 
-                    # Log evaluation stats
-                    eval_len = np.mean(d['eval_ep_len'])
-                    eval_env_ret = np.mean(d['eval_ep_env_ret'])
-                    b_eval.append(eval_env_ret)
-                    avg_eval_env_ret = np.mean(b_eval)
-                    logger.record_tabular('eval_len', eval_len)
-                    logger.record_tabular('eval_env_ret', eval_env_ret)
-                    logger.info("[CSV] dumping eval stats in .csv file")
-                    logger.dump_tabular()
+                # Log evaluation stats
+                eval_len = np.mean(d['eval_ep_len'])
+                eval_env_ret = np.mean(d['eval_ep_env_ret'])
+                b_eval.append(eval_env_ret)
+                avg_eval_env_ret = np.mean(b_eval)
+                logger.record_tabular('eval_len', eval_len)
+                logger.record_tabular('eval_env_ret', eval_env_ret)
+                logger.info("[CSV] dumping eval stats in .csv file")
+                logger.dump_tabular()
 
-                    if args.record:
-                        # Record the last episode in a video
-                        frames = np.split(eval_ep['obs_render'], 1, axis=-1)
-                        frames = np.concatenate(np.array(frames), axis=0)
-                        frames = np.array([np.squeeze(a, axis=0)
-                                           for a in np.split(frames, frames.shape[0], axis=0)])
-                        frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
+                if args.record:
+                    # Record the last episode in a video
+                    frames = np.split(eval_ep['obs_render'], 1, axis=-1)
+                    frames = np.concatenate(np.array(frames), axis=0)
+                    frames = np.array([np.squeeze(a, axis=0)
+                                       for a in np.split(frames, frames.shape[0], axis=0)])
+                    frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
 
-                        wandb.log({'video': wandb.Video(frames.astype(np.uint8),
-                                                        fps=25,
-                                                        format='gif',
-                                                        caption="Evaluation (last episode)")},
-                                  step=timesteps_so_far)
+                    wandb.log({'video': wandb.Video(frames.astype(np.uint8),
+                                                    fps=25,
+                                                    format='gif',
+                                                    caption="Evaluation (last episode)")},
+                              step=timesteps_so_far)
+
+        # Increment counters
+        iters_so_far += 1
+        if args.algo == 'ppo':
+            timesteps_so_far += args.rollout_len
+        elif args.algo == 'gail':
+            timesteps_so_far += (agent.hps.g_steps * args.rollout_len)
 
         # Log stats in dashboard
         if rank == 0:
@@ -537,6 +551,9 @@ def learn(args,
             if agent.hps.algo == 'gail':
                 wandb.log({'dis_loss': np.mean(d['dis_losses'])},
                           step=timesteps_so_far)
+                if agent.hps.kye_d_regress:
+                    wandb.log({'angle': np.mean(d['angles'])},
+                              step=timesteps_so_far)
 
             if iters_so_far % args.eval_frequency == 0:
                 wandb.log({'eval_len': eval_len,
@@ -544,8 +561,5 @@ def learn(args,
                            'avg_eval_env_ret': avg_eval_env_ret},
                           step=timesteps_so_far)
 
-        # Increment counters
-        iters_so_far += 1
-        timesteps_so_far += args.rollout_len
         # Clear the iteration's running stats
         d.clear()

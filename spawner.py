@@ -36,7 +36,7 @@ CONDA = CONFIG['resources']['conda_env']
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
 BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'shared_value',
-             'state_only', 'minimax_only', 'grad_pen', 'wrap_absorb',
+             'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'wrap_absorb',
              'kye_p_binning', 'kye_p_regress', 'kye_d_regress', 'kye_mixing',
              'use_purl']
 
@@ -53,7 +53,8 @@ if BENCH == 'mujoco':
                  'Walker2d-v3',
                  'HalfCheetah-v3',
                  'Ant-v3'],
-        'glaceon': ['Humanoid-v3']
+        'glaceon': ['HalfCheetah-v3',
+                    'Ant-v3']
     }
     if args.envset == 'all':
         ENVS = TOC['easy'] + TOC['hard']
@@ -204,11 +205,13 @@ def get_hps(sweep):
             'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
 
             # Adversarial imitation
+            'g_steps': CONFIG['parameters']['g_steps'],
+            'd_steps': CONFIG['parameters']['d_steps'],
             'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.001),
-            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 1),
+            'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
@@ -274,11 +277,13 @@ def get_hps(sweep):
             'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
 
             # Adversarial imitation
+            'g_steps': CONFIG['parameters']['g_steps'],
+            'd_steps': CONFIG['parameters']['d_steps'],
             'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
             'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.001),
-            'd_update_ratio': CONFIG['parameters'].get('d_update_ratio', 1),
+            'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
@@ -352,7 +357,7 @@ def create_job_str(name, command, envkey):
                             '#SBATCH --ntasks={ntasks}\n'
                             '#SBATCH --cpus-per-task=1\n'
                             '#SBATCH --time={timeout}\n'
-                            '#SBATCH --mem=32000\n'
+                            '#SBATCH --mem=16000\n'
                             '#SBATCH --output=./out/run_%j.out\n'
                             '#SBATCH --constraint="V3|V4|V5|V6|V7"\n')
         if CONFIG['parameters']['cuda']:

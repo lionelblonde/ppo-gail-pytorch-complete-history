@@ -54,14 +54,15 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--p_ent_reg_scale', help='p entropy reg coeff', type=float, default=0.)
 
     # Adversarial imitation
+    parser.add_argument('--g_steps', type=int, default=3)
+    parser.add_argument('--d_steps', type=int, default=1)
     parser.add_argument('--d_lr', type=float, default=3e-4)
     boolean_flag(parser, 'state_only', default=False)
     boolean_flag(parser, 'minimax_only', default=True)
     parser.add_argument('--d_ent_reg_scale', help='d entropy reg coeff', type=float, default=0.001)
-    parser.add_argument('--d_update_ratio', type=int, default=5,
-                        help='number of discriminator update per generator update')
     parser.add_argument('--num_demos', help='number of expert demo trajs for imitation',
                         type=int, default=None)
+    boolean_flag(parser, 'spectral_norm', help='whether to use spectral norm', default=True)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')

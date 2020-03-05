@@ -15,7 +15,7 @@ parameters:
   task: 'train'
   algo: 'gail'
   cuda: false
-  num_seeds: 10
+  num_seeds: 5
   benchmark: 'mujoco'
 
   # Training
@@ -36,7 +36,7 @@ parameters:
 
   # Algorithm
   rollout_len: 1024
-  optim_epochs_per_iter: 3
+  optim_epochs_per_iter: 4
   batch_size: 128
   gamma: 0.99
   gae_lambda: 0.95
@@ -45,11 +45,13 @@ parameters:
   p_ent_reg_scale: 0.
 
   # Adversarial imitation
+  g_steps: 3
+  d_steps: 1
   d_lr: 1e-3
   state_only: false
   minimax_only: true
   d_ent_reg_scale: 0.001
-  d_update_ratio: 1
+  spectral_norm: false
   grad_pen: false
   fake_ls_type: '"none"'
   real_ls_type: '"none"'
