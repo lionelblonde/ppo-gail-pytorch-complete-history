@@ -12,7 +12,6 @@ from gym import spaces
 from helpers import logger
 from helpers.distributed_util import mpi_mean_reduce
 # from helpers.distributed_util import sync_check
-from agents.memory import RingBuffer
 from helpers.env_makers import get_benchmark
 from helpers.console_util import timed_cm_wrapper, log_iter_info
 
@@ -24,21 +23,10 @@ def ppo_rollout_generator(env, agent, rollout_len):
     # Reset agent's env
     ob = np.array(env.reset())
     # Init collections
-    obs0 = RingBuffer(rollout_len, shape=agent.ob_shape)
-    obs1 = RingBuffer(rollout_len, shape=agent.ob_shape)
-    acs = RingBuffer(rollout_len, shape=((1,)
-                                         if isinstance(agent.ac_space, spaces.Discrete)
-                                         else agent.ac_shape))
-    vs = RingBuffer(rollout_len, shape=(1,), dtype=np.float32)
-    logps = RingBuffer(rollout_len, shape=(1,), dtype=np.float32)
-    env_rews = RingBuffer(rollout_len, shape=(1,), dtype=np.float32)
-    dones = RingBuffer(rollout_len, shape=(1,), dtype=np.int32)
+    rollout = defaultdict(list)
     # Init current episode statistics
     cur_ep_len = 0
     cur_ep_env_ret = 0
-    # Init global episodic statistics
-    ep_lens = []
-    ep_env_rets = []
 
     while True:
 
@@ -53,39 +41,34 @@ def ppo_rollout_generator(env, agent, rollout_len):
             ac = ac if isinstance(ac, int) else np.asscalar(ac)
 
         if t > 0 and t % rollout_len == 0:
-            out = {
-                # Data collected during the rollout
-                "obs0": obs0.data.reshape(-1, *agent.ob_shape),
-                "obs1": obs1.data.reshape(-1, *agent.ob_shape),
-                "acs": (acs.data.reshape(-1, *((1,)
-                        if isinstance(agent.ac_space, spaces.Discrete)
-                        else agent.ac_shape))),
-                "vs": vs.data.reshape(-1, 1),
-                "logps": logps.data.reshape(-1, 1),
-                "env_rews": env_rews.data.reshape(-1, 1),
-                "dones": dones.data.reshape(-1, 1),
-                "next_v": v * (1 - done),
-                # Global episodic statistics
-                "ep_lens": ep_lens,
-                "ep_env_rets": ep_env_rets,
-            }
-            # Yield
-            yield out
-            # Reset global episodic statistics
-            ep_lens = []
-            ep_env_rets = []
+
+            for k in rollout.keys():
+                if k in ['obs0', 'obs1']:
+                    rollout[k] = np.array(rollout[k]).reshape(-1, agent.ob_dim)
+                elif k == 'acs':
+                    rollout[k] = np.array(rollout[k]).reshape(-1, agent.ac_dim)
+                elif k in ['vs', 'logps', 'env_rews', 'dones']:
+                    rollout[k] = np.array(rollout[k]).reshape(-1, 1)
+                else:
+                    rollout[k] = np.array(rollout[k])
+            rollout['next_v'].append(v * (1 - done))
+
+            yield rollout
+
+            # Clear the collections
+            rollout.clear()
 
         # Interact with env(s)
         new_ob, env_rew, done, _ = env.step(ac)
 
         # Populate collections
-        obs0.append(ob)
-        acs.append(ac)
-        obs1.append(new_ob)
-        vs.append(v)
-        logps.append(logp)
-        env_rews.append(env_rew)
-        dones.append(done)
+        rollout['obs0'].append(ob)
+        rollout['acs'].append(ac)
+        rollout['obs1'].append(new_ob)
+        rollout['vs'].append(v)
+        rollout['logps'].append(logp)
+        rollout['env_rews'].append(env_rew)
+        rollout['dones'].append(done)
 
         # Update current episode statistics
         cur_ep_len += 1
@@ -98,9 +81,9 @@ def ppo_rollout_generator(env, agent, rollout_len):
         if done:
             # Update the global episodic statistics and
             # reset current episode statistics
-            ep_lens.append(cur_ep_len)
+            rollout['ep_lens'].append(cur_ep_len)
             cur_ep_len = 0
-            ep_env_rets.append(cur_ep_env_ret)
+            rollout['ep_env_rets'].append(cur_ep_env_ret)
             cur_ep_env_ret = 0
             # Reset env
             ob = np.array(env.reset())
@@ -158,6 +141,7 @@ def gail_rollout_generator(env, agent, rollout_len):
                     d_rollout[k] = np.array(d_rollout[k]).reshape(-1, ob_dim)
                 elif k == 'acs':
                     d_rollout[k] = np.array(d_rollout[k]).reshape(-1, ac_dim)
+
             yield p_rollout, d_rollout
 
             # Clear the collections
@@ -192,14 +176,14 @@ def gail_rollout_generator(env, agent, rollout_len):
                 _new_ob = np.append(new_ob, 0)
                 d_rollout['obs1'].append(_new_ob)
             # Get synthetic rewards
-            syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])[0]
+            syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
         else:
             d_rollout['obs0'].append(ob)
             d_rollout['acs'].append(ac)
             d_rollout['obs1'].append(new_ob)
             # Get synthetic rewards
-            syn_rew = agent.get_reward(ob[None], ac[None], new_ob[None])[0]
-        syn_rew = np.asscalar(syn_rew.cpu().numpy().flatten())
+            syn_rew = agent.get_reward(ob[None], ac[None], new_ob[None])
+        syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
         p_rollout['syn_rews'].append(syn_rew)
 
         # Update current episode statistics
@@ -380,10 +364,10 @@ def learn(args,
     timesteps_so_far = 0
     tstart = time.time()
 
-    # Create dictionary to collect stats
+    # Create collections
     d = defaultdict(list)
-    b_roll = deque(maxlen=40)
-    b_eval = deque(maxlen=40)
+    b_roll = deque(maxlen=10)
+    b_eval = deque(maxlen=10)
 
     # Set up model save directory
     if rank == 0:
@@ -403,9 +387,9 @@ def learn(args,
                 pause = 5
                 logger.info("[WARN] wandb co error. Retrying in {} secs.".format(pause))
                 time.sleep(pause)
-            else:
-                logger.info("[WARN] wandb co established!")
-                break
+                continue
+            logger.info("[WARN] wandb co established!")
+            break
 
     # Create rollout generator for training the agent
     if args.algo == 'ppo':
@@ -437,54 +421,51 @@ def learn(args,
         if args.algo == 'ppo':
             with timed('interacting'):
                 rollout = roll_gen.__next__()
-                roll_len = mpi_mean_reduce(rollout['ep_lens'])
+                d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
                 roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
+                d['roll_env_ret'].append(roll_env_ret)
                 b_roll.append(roll_env_ret)
-                avg_roll_env_ret = np.mean(b_roll)
-                logger.record_tabular('roll_len', roll_len)
-                logger.record_tabular('roll_env_ret', roll_env_ret)
-                logger.record_tabular('avg_roll_env_ret', avg_roll_env_ret)
-                logger.info("[CSV] dumping roll stats in .csv file")
-                logger.dump_tabular()
+
             with timed('training'):
                 metrics, lrnow = agent.update_policy_value(
                     rollout=rollout,
                     iters_so_far=iters_so_far,
                 )
-                # Log training stats
                 d['pol_losses'].append(metrics['p_loss'])
                 d['val_losses'].append(metrics['v_loss'])
 
         elif args.algo == 'gail':
             for _ in range(agent.hps.g_steps):
+
                 with timed('interacting'):
                     # Unpack (one rollout dict for policy training, one for reward training)
                     p_rollout, d_rollout = roll_gen.__next__()
-                    roll_len = mpi_mean_reduce(p_rollout['ep_lens'])
+                    d['roll_len'].append(mpi_mean_reduce(p_rollout['ep_lens']))
                     roll_env_ret = mpi_mean_reduce(p_rollout['ep_env_rets'])
+                    d['roll_env_ret'].append(roll_env_ret)
                     b_roll.append(roll_env_ret)
-                    avg_roll_env_ret = np.mean(b_roll)
-                    logger.record_tabular('roll_len', roll_len)
-                    logger.record_tabular('roll_env_ret', roll_env_ret)
-                    logger.record_tabular('avg_roll_env_ret', avg_roll_env_ret)
-                    roll_syn_ret = mpi_mean_reduce(p_rollout['ep_syn_rets'])
-                    logger.record_tabular('roll_syn_ret', roll_syn_ret)
-                    logger.info("[CSV] dumping roll stats in .csv file")
-                    logger.dump_tabular()
+
                 with timed('policy and value training'):
                     metrics, lrnow = agent.update_policy_value(
                         p_rollout=p_rollout,
+                        iters_so_far=iters_so_far,
+                    )
+                    d['pol_losses'].append(metrics['p_loss'])
+                    d['val_losses'].append(metrics['v_loss'])
+
+                    if agent.hps.kye_p:
+                        agent.update_reward_control(
+                            d_rollout=d_rollout,
+                        )
+
+            for _ in range(agent.hps.d_steps):
+                with timed('discriminator training'):
+                    metrics = agent.update_discriminator(
                         d_rollout=d_rollout,
                         iters_so_far=iters_so_far,
                     )
-                    # Log training stats
-                    d['pol_losses'].append(metrics['p_loss'])
-                    d['val_losses'].append(metrics['v_loss'])
-            for _ in range(agent.hps.d_steps):
-                with timed('discriminator training'):
-                    metrics = agent.update_discriminator(d_rollout=d_rollout)
                     d['dis_losses'].append(metrics['d_loss'])
-                    if agent.hps.kye_d_regress:
+                    if agent.hps.kye_d:
                         d['angles'].append(metrics['angle'])
 
         if eval_env is not None:
@@ -497,32 +478,10 @@ def learn(args,
                         # Sample an episode w/ non-perturbed actor w/o storing anything
                         eval_ep = eval_ep_gen.__next__()
                         # Aggregate data collected during the evaluation to the buffers
-                        d['eval_ep_len'].append(eval_ep['ep_len'])
-                        d['eval_ep_env_ret'].append(eval_ep['ep_env_ret'])
+                        d['eval_len'].append(eval_ep['ep_len'])
+                        d['eval_env_ret'].append(eval_ep['ep_env_ret'])
 
-                # Log evaluation stats
-                eval_len = np.mean(d['eval_ep_len'])
-                eval_env_ret = np.mean(d['eval_ep_env_ret'])
-                b_eval.append(eval_env_ret)
-                avg_eval_env_ret = np.mean(b_eval)
-                logger.record_tabular('eval_len', eval_len)
-                logger.record_tabular('eval_env_ret', eval_env_ret)
-                logger.info("[CSV] dumping eval stats in .csv file")
-                logger.dump_tabular()
-
-                if args.record:
-                    # Record the last episode in a video
-                    frames = np.split(eval_ep['obs_render'], 1, axis=-1)
-                    frames = np.concatenate(np.array(frames), axis=0)
-                    frames = np.array([np.squeeze(a, axis=0)
-                                       for a in np.split(frames, frames.shape[0], axis=0)])
-                    frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
-
-                    wandb.log({'video': wandb.Video(frames.astype(np.uint8),
-                                                    fps=25,
-                                                    format='gif',
-                                                    caption="Evaluation (last episode)")},
-                              step=timesteps_so_far)
+                    b_eval.append(np.mean(d['eval_env_ret']))
 
         # Increment counters
         iters_so_far += 1
@@ -531,18 +490,38 @@ def learn(args,
         elif args.algo == 'gail':
             timesteps_so_far += (agent.hps.g_steps * args.rollout_len)
 
-        # Log stats in dashboard
         if rank == 0:
 
+            # Log stats in csv
+            if (iters_so_far - 1) % args.eval_frequency == 0:
+                logger.record_tabular('timestep', timesteps_so_far)
+                logger.record_tabular('eval_len', np.mean(d['eval_len']))
+                logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
+                logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+                logger.info("dumping stats in .csv file")
+                logger.dump_tabular()
+
+            if ((iters_so_far - 1) % args.eval_frequency == 0) and args.record:
+                # Record the last episode in a video
+                frames = np.split(eval_ep['obs_render'], 1, axis=-1)
+                frames = np.concatenate(np.array(frames), axis=0)
+                frames = np.array([np.squeeze(a, axis=0)
+                                   for a in np.split(frames, frames.shape[0], axis=0)])
+                frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
+
+                wandb.log({'video': wandb.Video(frames.astype(np.uint8),
+                                                fps=25,
+                                                format='gif',
+                                                caption="Evaluation (last episode)")},
+                          step=timesteps_so_far)
+
+            # Log stats in dashboard
             wandb.log({"num_workers": np.array(world_size)})
 
-            wandb.log({'roll_len': roll_len,
-                       'roll_env_ret': roll_env_ret,
-                       'avg_roll_env_ret': avg_roll_env_ret},
+            wandb.log({'roll_len': np.mean(d['roll_len']),
+                       'roll_env_ret': np.mean(d['roll_env_ret']),
+                       'avg_roll_env_ret': np.mean(b_roll)},
                       step=timesteps_so_far)
-            if agent.hps.algo == 'gail':
-                wandb.log({'roll_syn_ret': roll_syn_ret},
-                          step=timesteps_so_far)
 
             wandb.log({'pol_loss': np.mean(d['pol_losses']),
                        'val_loss': np.mean(d['val_losses']),
@@ -551,14 +530,14 @@ def learn(args,
             if agent.hps.algo == 'gail':
                 wandb.log({'dis_loss': np.mean(d['dis_losses'])},
                           step=timesteps_so_far)
-                if agent.hps.kye_d_regress:
+                if agent.hps.kye_d:
                     wandb.log({'angle': np.mean(d['angles'])},
                               step=timesteps_so_far)
 
-            if iters_so_far % args.eval_frequency == 0:
-                wandb.log({'eval_len': eval_len,
-                           'eval_env_ret': eval_env_ret,
-                           'avg_eval_env_ret': avg_eval_env_ret},
+            if (iters_so_far - 1) % args.eval_frequency == 0:
+                wandb.log({'eval_len': np.mean(d['eval_len']),
+                           'eval_env_ret': np.mean(d['eval_env_ret']),
+                           'avg_eval_env_ret': np.mean(b_eval)},
                           step=timesteps_so_far)
 
         # Clear the iteration's running stats

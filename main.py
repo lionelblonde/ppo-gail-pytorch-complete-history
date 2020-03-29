@@ -61,10 +61,12 @@ def train(args):
 
     elif args.algo == 'gail':
         # Create the expert demonstrations dataset from expert trajectories
-        expert_dataset = DemoDataset(expert_path=args.expert_path,
-                                     num_demos=args.num_demos,
-                                     env=env,
-                                     wrap_absorb=args.wrap_absorb)
+        expert_dataset = DemoDataset(
+            expert_path=args.expert_path,
+            num_demos=args.num_demos,
+            env=env,
+            wrap_absorb=args.wrap_absorb,
+        )
 
         def agent_wrapper():
             return GAILAgent(env=env, device=device, hps=args,

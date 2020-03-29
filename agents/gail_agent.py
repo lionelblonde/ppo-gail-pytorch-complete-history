@@ -47,7 +47,7 @@ class GAILAgent(object):
         if not self.hps.shared_value:
             self.value = Value(self.env, self.hps).to(self.device)
             sync_with_root(self.value)
-        if self.hps.kye_d_regress:
+        if self.hps.kye_d:
             self.discriminator = KYEDiscriminator(self.env, self.hps).to(self.device)
         else:
             self.discriminator = Discriminator(self.env, self.hps).to(self.device)
@@ -81,7 +81,7 @@ class GAILAgent(object):
 
         log_module_info(logger, 'policy', self.policy)
         if not self.hps.shared_value:
-            log_module_info(logger, 'value', self.policy)
+            log_module_info(logger, 'value', self.value)
         log_module_info(logger, 'discriminator', self.discriminator)
 
     def parse_label_smoothing_type(self, ls_type):
@@ -153,7 +153,7 @@ class GAILAgent(object):
                 non_absorbing_rows.append(j)
         return x[non_absorbing_rows, :], non_absorbing_rows
 
-    def update_policy_value(self, p_rollout, d_rollout, iters_so_far):
+    def update_policy_value(self, p_rollout, iters_so_far):
         """Update the policy and value networks"""
 
         # Container for all the metrics
@@ -176,17 +176,6 @@ class GAILAgent(object):
             shuffle=True,
             drop_last=False,  # no compatibility issue, only used for policy alone
         )
-        d_keys = ['obs0', 'obs1', 'acs']
-        d_dataset = Dataset({k: d_rollout[k] for k in d_keys})
-        d_dataloader = DataLoader(
-            d_dataset,
-            self.e_batch_size,
-            shuffle=True,
-            drop_last=True,
-        )
-
-        lengths = [len(p_dataloader), len(d_dataloader), len(self.e_dataloader)]
-        logger.info("[INFO] dataloaders lengths (p, d, e): {}, {}, {}".format(*lengths))
 
         for _ in range(self.hps.optim_epochs_per_iter):
 
@@ -195,7 +184,6 @@ class GAILAgent(object):
 
                 # Transfer to device
                 state = p_batch['obs0'].to(self.device)
-                next_state = p_batch['obs1'].to(self.device)
                 action = p_batch['acs'].to(self.device)
                 logp_old = p_batch['logps'].to(self.device)
                 v_old = p_batch['vs'].to(self.device)
@@ -255,91 +243,78 @@ class GAILAgent(object):
                     average_gradients(self.value, self.device)
                     self.v_optimizer.step()
 
-            if self.hps.kye_p_binning or self.hps.kye_p_regress:
-
-                for d_batch in d_dataloader:  # go through the whole d_rollout
-                    logger.info("[INFO] updating policy auxiliary task")
-
-                    # Transfer to device
-                    _state = d_batch['obs0'].to(self.device)
-                    state = d_batch['obs0'].to(self.device)
-                    next_state = d_batch['obs1'].to(self.device)
-                    action = d_batch['acs'].to(self.device)
-                    if self.hps.wrap_absorb:
-                        _, indices_a = self.remove_absorbing(state)
-                        _, indices_b = self.remove_absorbing(next_state)
-                        indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
-                        _state = _state[indices, 0:-1]
-                        state = state[indices, :]
-                        next_state = next_state[indices, :]
-                        action = action[indices, :]
-
-                    if self.hps.kye_mixing:
-                        # Get a minibatch of expert data
-                        e_batch = next(iter(self.e_dataloader))
-                        _state_e = e_batch['obs0']
-                        state_e = e_batch['obs0']
-                        next_state_e = e_batch['obs1']
-                        action_e = e_batch['acs']
-                        if self.hps.wrap_absorb:
-                            _, indices_a = self.remove_absorbing(state_e)
-                            _, indices_b = self.remove_absorbing(next_state_e)
-                            indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
-                            _state_e = _state_e[indices, 0:-1]
-                            state_e = state_e[indices, :]
-                            next_state_e = next_state_e[indices, :]
-                            action_e = action_e[indices, :]
-
-                    if self.hps.kye_p_binning:
-                        aux_loss = F.cross_entropy(
-                            input=self.policy.auxo(_state),
-                            target=self.get_reward(state, action, next_state)[1]
-                        )
-                        if self.hps.kye_mixing:
-                            aux_loss += F.cross_entropy(
-                                input=self.policy.auxo(_state_e),
-                                target=self.get_reward(state_e, action_e, next_state_e)[1]
-                            )
-                    elif self.hps.kye_p_regress:
-                        aux_loss = F.smooth_l1_loss(
-                            input=self.policy.auxo(_state),
-                            target=self.get_reward(state, action, next_state)[0]
-                        )
-                        if self.hps.kye_mixing:
-                            aux_loss += F.smooth_l1_loss(
-                                input=self.policy.auxo(_state_e),
-                                target=self.get_reward(state_e, action_e, next_state_e)[0]
-                            )
-
-                    # Log metrics
-                    metrics['entropy_loss'].append(entropy_loss)
-                    metrics['aux_loss'].append(aux_loss)
-
-                    aux_loss *= self.hps.kye_p_scale
-
-                    # Log metrics
-                    metrics['aux_loss_scaled'].append(aux_loss)
-
-                    # Update parameters
-                    self.p_optimizer.zero_grad()
-                    aux_loss.backward()
-                    average_gradients(self.policy, self.device)
-                    if self.hps.clip_norm > 0:
-                        U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
-                    self.p_optimizer.step()
-                    self.scheduler.step(iters_so_far)
-
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics, self.scheduler.get_last_lr()
 
-    def update_discriminator(self, d_rollout):
+    def update_reward_control(self, d_rollout):
+        """Update the policy and value networks"""
+
+        d_keys = ['obs0', 'obs1', 'acs']
+        d_dataset = Dataset({k: d_rollout[k] for k in d_keys})
+        d_dataloader = DataLoader(
+            d_dataset,
+            self.e_batch_size,
+            shuffle=True,
+            drop_last=True,
+        )
+
+        for d_batch in d_dataloader:  # go through the whole d_rollout
+            logger.info("[INFO] updating reward control")
+
+            # Transfer to device
+            _state = d_batch['obs0'].to(self.device)
+            state = d_batch['obs0'].to(self.device)
+            next_state = d_batch['obs1'].to(self.device)
+            action = d_batch['acs'].to(self.device)
+            if self.hps.wrap_absorb:
+                _, indices_a = self.remove_absorbing(state)
+                _, indices_b = self.remove_absorbing(next_state)
+                indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
+                _state = _state[indices, 0:-1]
+                state = state[indices, :]
+                next_state = next_state[indices, :]
+                action = action[indices, :]
+
+            aux_loss = F.smooth_l1_loss(
+                input=self.policy.auxo(_state),
+                target=self.get_reward(state, action, next_state)
+            )
+            if self.hps.kye_mixing:
+                e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
+                _state_e = e_batch['obs0']
+                state_e = e_batch['obs0']
+                next_state_e = e_batch['obs1']
+                action_e = e_batch['acs']
+                if self.hps.wrap_absorb:
+                    _, indices_a = self.remove_absorbing(state_e)
+                    _, indices_b = self.remove_absorbing(next_state_e)
+                    indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
+                    _state_e = _state_e[indices, 0:-1]
+                    state_e = state_e[indices, :]
+                    next_state_e = next_state_e[indices, :]
+                    action_e = action_e[indices, :]
+                aux_loss += F.smooth_l1_loss(
+                    input=self.policy.auxo(_state_e),
+                    target=self.get_reward(state_e, action_e, next_state_e)
+                )
+            aux_loss *= self.hps.kye_p_scale
+
+            # Update parameters
+            self.p_optimizer.zero_grad()
+            aux_loss.backward()
+            average_gradients(self.policy, self.device)
+            if self.hps.clip_norm > 0:
+                U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
+            self.p_optimizer.step()
+
+    def update_discriminator(self, d_rollout, iters_so_far):
         """Update the discriminator network"""
 
         # Container for all the metrics
         metrics = defaultdict(list)
 
         # Create DataLoader object to iterate over transitions in rollouts
-        d_keys = ['obs0', 'obs1', 'acs']
+        d_keys = ['obs0', 'acs']
         d_dataset = Dataset({k: d_rollout[k] for k in d_keys})
         d_dataloader = DataLoader(
             d_dataset,
@@ -417,8 +392,8 @@ class GAILAgent(object):
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
 
-            if self.hps.kye_d_regress:
-                # Compute gradient of the feature exctractor for d_loss
+            if self.hps.kye_d:
+                # Compute gradient of the feature extractor for d_loss
                 self.d_optimizer.zero_grad()
                 d_loss.backward(retain_graph=True)
                 if self.hps.spectral_norm:
@@ -534,7 +509,6 @@ class GAILAgent(object):
         ac = ac.cpu()
         # Compure score
         score = self.discriminator.D(ob, ac).detach().view(-1, 1)
-        sigscore = torch.sigmoid(score)  # squashed in [0, 1]
         # Counterpart of GAN's minimax (also called "saturating") loss
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
@@ -551,15 +525,8 @@ class GAILAgent(object):
             non_satur_reward = F.logsigmoid(score)
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
-            reward = (0.2 * non_satur_reward) + (0.8 * minimax_reward)
-        # Perform binning
-        num_bins = 3  # arbitrarily
-        binned = (torch.abs(sigscore - 1e-8) // (1 / num_bins)).long().squeeze(-1)
-        for i in range(binned.size(0)):
-            if binned.view(-1)[i] > 2. or binned.view(-1)[i] < 0.:
-                # This should never happen, flag, but don't rupt
-                logger.info("[WARN] binned.view(-1)[{}]={}.".format(i, binned.view(-1)[i]))
-        return self.hps.syn_rew_scale * reward, binned
+            reward = non_satur_reward + minimax_reward
+        return self.hps.syn_rew_scale * reward
 
     def save(self, path, iters):
         SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])

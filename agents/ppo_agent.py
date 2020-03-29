@@ -32,7 +32,6 @@ class PPOAgent(object):
         self.ac_dim = self.ac_space.n if self.is_discrete else self.ac_shape[-1]
         self.device = device
         self.hps = hps
-        assert not self.hps.binned_aux_loss and not self.hps.squared_aux_loss
         if self.hps.clip_norm <= 0:
             logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 

@@ -475,7 +475,7 @@ class GaussPolicy(nn.Module):
                 ]))),
             ]))
             self.v_head = nn.Linear(fc_in, 1)
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             self.r_decoder = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(fc_in, fc_in)),
@@ -484,14 +484,14 @@ class GaussPolicy(nn.Module):
                 ]))),
             ]))
             self.r_skip_co = nn.Sequential()
-            self.r_head = nn.Linear(fc_in, 3 if self.hps.kye_p_binning else 1)  # bins
+            self.r_head = nn.Linear(fc_in, 1)
         # Perform initialization
         self.p_decoder.apply(init(weight_scale=5./3.))
         self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
             self.v_decoder.apply(init(weight_scale=5./3.))
             self.v_head.apply(init(weight_scale=0.01))
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             self.r_decoder.apply(init(weight_scale=5./3.))
             self.r_head.apply(init(weight_scale=0.01))
 
@@ -532,7 +532,7 @@ class GaussPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def auxo(self, ob):
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             out = self.forward(ob)
             return out[3] if self.hps.shared_value else out[2]  # aux
         else:
@@ -547,10 +547,8 @@ class GaussPolicy(nn.Module):
         if self.hps.shared_value:
             value = self.v_head(self.v_decoder(x))
             out.append(value)
-        if self.hps.kye_p_binning or self.hps.kye_p_regress:
+        if self.hps.kye_p:
             aux = self.r_head(self.r_decoder(x))
-            if self.hps.kye_p_binning:
-                aux = F.log_softmax(aux, dim=1).exp()
             out.append(aux)
         return out
 
@@ -684,6 +682,7 @@ class Discriminator(nn.Module):
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define the input dimension, depending on whether actions are used too.
         in_dim = ob_dim if self.hps.state_only else ob_dim + ac_dim
+        # Assemble the last layers and output heads
         self.score_trunk = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(in_dim, 100))),
@@ -728,6 +727,7 @@ class KYEDiscriminator(nn.Module):
         apply_sn = snwrap(use_sn=self.hps.spectral_norm)
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        # Assemble the last layers and output heads
         self.ob_encoder = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(ob_dim, 64))),

@@ -37,29 +37,30 @@ TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
 BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'shared_value',
              'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'wrap_absorb',
-             'kye_p_binning', 'kye_p_regress', 'kye_d_regress', 'kye_mixing',
+             'kye_p', 'kye_d', 'kye_mixing',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     TOC = {
-        'debug': ['Hopper-v3'],
-        'flareon': ['Hopper-v3',
-                    'Walker2d-v3'],
-        'easy': ['InvertedPendulum-v2',
-                 'InvertedDoublePendulum-v2'],
-        'hard': ['Hopper-v3',
-                 'Walker2d-v3',
-                 'HalfCheetah-v3',
-                 'Ant-v3'],
-        'glaceon': ['HalfCheetah-v3',
-                    'Ant-v3']
+        'debug': ['HalfCheetah-v3'],
+        'flareon': ['InvertedPendulum-v2',
+                    'InvertedDoublePendulum-v2',
+                    'Hopper-v3'],
+        'glaceon': ['Walker2d-v3',
+                    'HalfCheetah-v3',
+                    'Ant-v3',
+                    'Humanoid-v3'],
+        'humanoid': ['Humanoid-v3'],
+        'suite': ['InvertedPendulum-v2',
+                  'InvertedDoublePendulum-v2',
+                  'Hopper-v3',
+                  'Walker2d-v3',
+                  'HalfCheetah-v3',
+                  'Ant-v3'],
     }
-    if args.envset == 'all':
-        ENVS = TOC['easy'] + TOC['hard']
-    else:
-        ENVS = TOC[args.envset]
+    ENVS = TOC[args.envset]
 
     if CLUSTER == 'baobab':
         # Define per-environement partitions map
@@ -89,10 +90,10 @@ if BENCH == 'mujoco':
             'InvertedPendulum': '0-06:00:00',
             'Reacher': '0-06:00:00',
             'InvertedDoublePendulum': '0-06:00:00',
-            'Hopper': '0-12:00:00',
-            'Walker2d': '0-12:00:00',
-            'HalfCheetah': '0-12:00:00',
-            'Ant': '0-12:00:00',
+            'Hopper': '0-06:00:00',
+            'Walker2d': '0-06:00:00',
+            'HalfCheetah': '0-06:00:00',
+            'Ant': '0-06:00:00',
             'Humanoid': '0-12:00:00',
         }
 
@@ -134,10 +135,15 @@ def copy_and_add_seed(hpmap, seed):
     # Add the seed and edit the job uuid to only differ by the seed
     hpmap_.update({'seed': seed})
     # Enrich the uuid with extra information
-    hpmap_.update({'uuid': "{}.{}.demos{}.seed{}".format(hpmap['uuid'],
-                                                         hpmap['env_id'],
-                                                         str(hpmap['num_demos']).zfill(3),
-                                                         str(seed).zfill(2))})
+    if NEED_DEMOS:
+        hpmap_.update({'uuid': "{}.{}.demos{}.seed{}".format(hpmap['uuid'],
+                                                             hpmap['env_id'],
+                                                             str(hpmap['num_demos']).zfill(3),
+                                                             str(seed).zfill(2))})
+    else:
+        hpmap_.update({'uuid': "{}.{}.seed{}".format(hpmap['uuid'],
+                                                     hpmap['env_id'],
+                                                     str(seed).zfill(2))})
     return hpmap_
 
 
@@ -205,8 +211,8 @@ def get_hps(sweep):
             'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
 
             # Adversarial imitation
-            'g_steps': CONFIG['parameters']['g_steps'],
-            'd_steps': CONFIG['parameters']['d_steps'],
+            'g_steps': CONFIG['parameters'].get('g_steps', 3),
+            'd_steps': CONFIG['parameters'].get('d_steps', 1),
             'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
@@ -220,13 +226,12 @@ def get_hps(sweep):
                                               '"soft_labels_0.1"',
                                               '"none"']),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
-            'wrap_absorb': CONFIG['parameters']['wrap_absorb'],
+            'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
 
             # KYE
-            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
-            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
-            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
 
@@ -277,8 +282,8 @@ def get_hps(sweep):
             'p_ent_reg_scale': CONFIG['parameters'].get('p_ent_reg_scale', 0.),
 
             # Adversarial imitation
-            'g_steps': CONFIG['parameters']['g_steps'],
-            'd_steps': CONFIG['parameters']['d_steps'],
+            'g_steps': CONFIG['parameters'].get('g_steps', 3),
+            'd_steps': CONFIG['parameters'].get('d_steps', 1),
             'd_lr': float(CONFIG['parameters'].get('d_lr', 3e-4)),
             'state_only': CONFIG['parameters'].get('state_only', False),
             'minimax_only': CONFIG['parameters'].get('minimax_only', True),
@@ -288,13 +293,12 @@ def get_hps(sweep):
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
             'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
-            'wrap_absorb': CONFIG['parameters']['wrap_absorb'],
+            'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
 
             # KYE
-            'kye_p_binning': CONFIG['parameters'].get('kye_p_binning', False),
-            'kye_p_regress': CONFIG['parameters'].get('kye_p_regress', False),
+            'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': CONFIG['parameters'].get('kye_p_scale', 0.1),
-            'kye_d_regress': CONFIG['parameters'].get('kye_d_regress', False),
+            'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
 
