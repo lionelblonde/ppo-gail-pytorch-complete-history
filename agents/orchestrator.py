@@ -98,8 +98,7 @@ def gail_rollout_generator(env, agent, rollout_len):
     # Reset agent's env
     ob = np.array(env.reset())
     # Init collections
-    p_rollout = defaultdict(list)
-    d_rollout = defaultdict(list)
+    rollout = defaultdict(list)
     # Init current episode statistics
     cur_ep_len = 0
     cur_ep_env_ret = 0
@@ -119,72 +118,68 @@ def gail_rollout_generator(env, agent, rollout_len):
 
         if t > 0 and t % rollout_len == 0:
 
-            for k in p_rollout.keys():
-                if k in ['obs0', 'obs1']:
-                    p_rollout[k] = np.array(p_rollout[k]).reshape(-1, agent.ob_dim)
-                elif k == 'acs':
-                    p_rollout[k] = np.array(p_rollout[k]).reshape(-1, agent.ac_dim)
-                elif k in ['vs', 'logps', 'env_rews', 'syn_rews', 'dones']:
-                    p_rollout[k] = np.array(p_rollout[k]).reshape(-1, 1)
-                else:
-                    p_rollout[k] = np.array(p_rollout[k])
-            p_rollout['next_v'].append(v * (1 - done))
-
             if agent.hps.wrap_absorb:
                 ob_dim = agent.ob_dim + 1
                 ac_dim = agent.ac_dim + 1
             else:
                 ob_dim = agent.ob_dim
                 ac_dim = agent.ac_dim
-            for k in d_rollout.keys():
-                if k in ['obs0', 'obs1']:
-                    d_rollout[k] = np.array(d_rollout[k]).reshape(-1, ob_dim)
-                elif k == 'acs':
-                    d_rollout[k] = np.array(d_rollout[k]).reshape(-1, ac_dim)
 
-            yield p_rollout, d_rollout
+            for k in rollout.keys():
+                if k in ['obs0', 'obs1']:
+                    rollout[k] = np.array(rollout[k]).reshape(-1, ob_dim)
+                elif k in ['obs0_orig', 'obs1_orig']:
+                    rollout[k] = np.array(rollout[k]).reshape(-1, agent.ob_dim)
+                elif k == 'acs':
+                    rollout[k] = np.array(rollout[k]).reshape(-1, ac_dim)
+                elif k in ['vs', 'logps', 'env_rews', 'syn_rews', 'dones']:
+                    rollout[k] = np.array(rollout[k]).reshape(-1, 1)
+                else:
+                    rollout[k] = np.array(rollout[k])
+            rollout['next_v'].append(v * (1 - done))
+
+            yield rollout
 
             # Clear the collections
-            p_rollout.clear()
-            d_rollout.clear()
+            rollout.clear()
 
         # Interact with env(s)
         new_ob, env_rew, done, _ = env.step(ac)
 
         # Populate collections
-        p_rollout['obs0'].append(ob)
-        p_rollout['acs'].append(ac)
-        p_rollout['obs1'].append(new_ob)
-        p_rollout['vs'].append(v)
-        p_rollout['logps'].append(logp)
-        p_rollout['env_rews'].append(env_rew)
-        p_rollout['dones'].append(done)
+        rollout['vs'].append(v)
+        rollout['logps'].append(logp)
+        rollout['env_rews'].append(env_rew)
+        rollout['dones'].append(done)
         if agent.hps.wrap_absorb:
+            rollout['obs0_orig'].append(ob)
+            rollout['acs_orig'].append(ac)
+            rollout['obs1_orig'].append(new_ob)
             _ob = np.append(ob, 0)
             _ac = np.append(ac, 0)
-            d_rollout['obs0'].append(_ob)
-            d_rollout['acs'].append(_ac)
+            rollout['obs0'].append(_ob)
+            rollout['acs'].append(_ac)
             if done and not env._elapsed_steps == env._max_episode_steps:
                 # Wrap with an absorbing state
                 _new_ob = np.append(np.zeros(agent.ob_shape), 1)
-                d_rollout['obs1'].append(_new_ob)
+                rollout['obs1'].append(_new_ob)
                 # Add absorbing transition
-                d_rollout['obs0'].append(np.append(np.zeros(agent.ob_shape), 1))
-                d_rollout['acs'].append(np.append(np.zeros(agent.ac_shape), 1))
-                d_rollout['obs1'].append(np.append(np.zeros(agent.ob_shape), 1))
+                rollout['obs0'].append(np.append(np.zeros(agent.ob_shape), 1))
+                rollout['acs'].append(np.append(np.zeros(agent.ac_shape), 1))
+                rollout['obs1'].append(np.append(np.zeros(agent.ob_shape), 1))
             else:
                 _new_ob = np.append(new_ob, 0)
-                d_rollout['obs1'].append(_new_ob)
+                rollout['obs1'].append(_new_ob)
             # Get synthetic rewards
             syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
         else:
-            d_rollout['obs0'].append(ob)
-            d_rollout['acs'].append(ac)
-            d_rollout['obs1'].append(new_ob)
+            rollout['obs0'].append(ob)
+            rollout['acs'].append(ac)
+            rollout['obs1'].append(new_ob)
             # Get synthetic rewards
             syn_rew = agent.get_reward(ob[None], ac[None], new_ob[None])
         syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
-        p_rollout['syn_rews'].append(syn_rew)
+        rollout['syn_rews'].append(syn_rew)
 
         # Update current episode statistics
         cur_ep_len += 1
@@ -198,11 +193,11 @@ def gail_rollout_generator(env, agent, rollout_len):
         if done:
             # Update the global episodic statistics and
             # reset current episode statistics
-            p_rollout['ep_lens'].append(cur_ep_len)
+            rollout['ep_lens'].append(cur_ep_len)
             cur_ep_len = 0
-            p_rollout['ep_env_rets'].append(cur_ep_env_ret)
+            rollout['ep_env_rets'].append(cur_ep_env_ret)
             cur_ep_env_ret = 0
-            p_rollout['ep_syn_rets'].append(cur_ep_syn_ret)
+            rollout['ep_syn_rets'].append(cur_ep_syn_ret)
             cur_ep_syn_ret = 0
             # Reset env
             ob = np.array(env.reset())
@@ -439,34 +434,31 @@ def learn(args,
 
                 with timed('interacting'):
                     # Unpack (one rollout dict for policy training, one for reward training)
-                    p_rollout, d_rollout = roll_gen.__next__()
-                    d['roll_len'].append(mpi_mean_reduce(p_rollout['ep_lens']))
-                    roll_env_ret = mpi_mean_reduce(p_rollout['ep_env_rets'])
+                    rollout = roll_gen.__next__()
+                    d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
+                    roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
                     d['roll_env_ret'].append(roll_env_ret)
                     b_roll.append(roll_env_ret)
 
                 with timed('policy and value training'):
                     metrics, lrnow = agent.update_policy_value(
-                        p_rollout=p_rollout,
+                        rollout=rollout,
                         iters_so_far=iters_so_far,
                     )
                     d['pol_losses'].append(metrics['p_loss'])
                     d['val_losses'].append(metrics['v_loss'])
-
                     if agent.hps.kye_p:
-                        agent.update_reward_control(
-                            d_rollout=d_rollout,
-                        )
+                        d['cos_sims_p'].append(metrics['cos_sim'])
 
             for _ in range(agent.hps.d_steps):
                 with timed('discriminator training'):
                     metrics = agent.update_discriminator(
-                        d_rollout=d_rollout,
+                        rollout=rollout,
                         iters_so_far=iters_so_far,
                     )
                     d['dis_losses'].append(metrics['d_loss'])
                     if agent.hps.kye_d:
-                        d['angles'].append(metrics['angle'])
+                        d['cos_sims_d'].append(metrics['cos_sim'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -498,6 +490,10 @@ def learn(args,
                 logger.record_tabular('eval_len', np.mean(d['eval_len']))
                 logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
                 logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+                if agent.hps.kye_p:
+                    logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
+                if agent.hps.kye_d:
+                    logger.record_tabular('cos_sim_d', np.mean(d['cos_sims_d']))
                 logger.info("dumping stats in .csv file")
                 logger.dump_tabular()
 
@@ -530,8 +526,11 @@ def learn(args,
             if agent.hps.algo == 'gail':
                 wandb.log({'dis_loss': np.mean(d['dis_losses'])},
                           step=timesteps_so_far)
+                if agent.hps.kye_p:
+                    wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
+                              step=timesteps_so_far)
                 if agent.hps.kye_d:
-                    wandb.log({'angle': np.mean(d['angles'])},
+                    wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
                               step=timesteps_so_far)
 
             if (iters_so_far - 1) % args.eval_frequency == 0:

@@ -1,6 +1,5 @@
 from collections import namedtuple, defaultdict
 import os.path as osp
-import math
 
 import torch
 import torch.nn.utils as U
@@ -13,7 +12,7 @@ from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
 from helpers.distributed_util import average_gradients, sync_with_root
-from agents.nets import GaussPolicy, Value, Discriminator, KYEDiscriminator
+from agents.nets import GaussPolicy, Value, Discriminator
 from agents.gae import gae
 
 
@@ -47,10 +46,7 @@ class GAILAgent(object):
         if not self.hps.shared_value:
             self.value = Value(self.env, self.hps).to(self.device)
             sync_with_root(self.value)
-        if self.hps.kye_d:
-            self.discriminator = KYEDiscriminator(self.env, self.hps).to(self.device)
-        else:
-            self.discriminator = Discriminator(self.env, self.hps).to(self.device)
+        self.discriminator = Discriminator(self.env, self.hps).to(self.device)
         sync_with_root(self.discriminator)
 
         # Set up demonstrations dataset
@@ -153,7 +149,7 @@ class GAILAgent(object):
                 non_absorbing_rows.append(j)
         return x[non_absorbing_rows, :], non_absorbing_rows
 
-    def update_policy_value(self, p_rollout, iters_so_far):
+    def update_policy_value(self, rollout, iters_so_far):
         """Update the policy and value networks"""
 
         # Container for all the metrics
@@ -161,17 +157,19 @@ class GAILAgent(object):
 
         # Augment `rollout` with GAE (Generalized Advantage Estimation), which among
         # other things adds the GAE estimate of the MC estimate of the return
-        gae(p_rollout, self.hps.gamma, self.hps.gae_lambda, rew_key='syn_rews')
+        gae(rollout, self.hps.gamma, self.hps.gae_lambda, rew_key='syn_rews')
 
         # Standardize advantage function estimate
-        p_rollout['advs'] = ((p_rollout['advs'] - p_rollout['advs'].mean()) /
-                             (p_rollout['advs'].std() + 1e-8))
+        rollout['advs'] = ((rollout['advs'] - rollout['advs'].mean()) /
+                           (rollout['advs'].std() + 1e-8))
 
         # Create DataLoader objects to iterate over transitions in rollouts
-        p_keys = ['obs0', 'obs1', 'acs', 'logps', 'vs', 'advs', 'td_lam_rets']
-        p_dataset = Dataset({k: p_rollout[k] for k in p_keys})
-        p_dataloader = DataLoader(
-            p_dataset,
+        keys = ['obs0', 'obs1', 'acs', 'logps', 'vs', 'advs', 'td_lam_rets']
+        if self.hps.wrap_absorb:
+            keys.extend(['obs0_orig', 'obs1_orig', 'acs_orig'])
+        dataset = Dataset({k: rollout[k] for k in keys})
+        dataloader = DataLoader(
+            dataset,
             self.hps.batch_size,
             shuffle=True,
             drop_last=False,  # no compatibility issue, only used for policy alone
@@ -179,16 +177,20 @@ class GAILAgent(object):
 
         for _ in range(self.hps.optim_epochs_per_iter):
 
-            for p_batch in p_dataloader:  # go through the whole p_rollout
+            for batch in dataloader:  # go through the whole p_rollout
                 logger.info("[INFO] updating policy")
 
                 # Transfer to device
-                state = p_batch['obs0'].to(self.device)
-                action = p_batch['acs'].to(self.device)
-                logp_old = p_batch['logps'].to(self.device)
-                v_old = p_batch['vs'].to(self.device)
-                advantage = p_batch['advs'].to(self.device)
-                td_lam_return = p_batch['td_lam_rets'].to(self.device)
+                if self.hps.wrap_absorb:
+                    state = batch['obs0_orig'].to(self.device)
+                    action = batch['acs_orig'].to(self.device)
+                else:
+                    state = batch['obs0'].to(self.device)
+                    action = batch['acs'].to(self.device)
+                logp_old = batch['logps'].to(self.device)
+                v_old = batch['vs'].to(self.device)
+                advantage = batch['advs'].to(self.device)
+                td_lam_return = batch['td_lam_rets'].to(self.device)
 
                 # Update running moments
                 self.policy.rms_obs.update(state)
@@ -202,7 +204,8 @@ class GAILAgent(object):
                 surrogate_loss_a = -advantage * ratio
                 surrogate_loss_b = -advantage * ratio.clamp(1.0 - self.hps.eps,
                                                             1.0 + self.hps.eps)
-                clip_loss = torch.max(surrogate_loss_a, surrogate_loss_b).mean()
+                _clip_loss = torch.max(surrogate_loss_a, surrogate_loss_b)
+                clip_loss = _clip_loss.mean()
                 kl_approx = 0.5 * (logp - logp_old).pow(2).mean()
                 kl_max = 0.5 * (logp - logp_old).pow(2).max()
                 clip_frac = (ratio - 1.0).abs().gt(self.hps.eps).float().mean()
@@ -214,11 +217,14 @@ class GAILAgent(object):
                 clip_v = v_old + (v - v_old).clamp(-self.hps.eps, self.hps.eps)
                 v_loss_a = (clip_v - td_lam_return).pow(2)
                 v_loss_b = (v - td_lam_return).pow(2)
-                v_loss = torch.max(v_loss_a, v_loss_b).mean()
+                _v_loss = torch.max(v_loss_a, v_loss_b)
+                v_loss = _v_loss.mean()
                 if self.hps.shared_value:
                     p_loss = clip_loss + entropy_loss + (self.hps.baseline_scale * v_loss)
+                    _p_loss = _clip_loss + (self.hps.baseline_scale * _v_loss)
                 else:
                     p_loss = clip_loss + entropy_loss
+                    _p_loss = _clip_loss
 
                 # Log metrics
                 metrics['entropy_loss'].append(entropy_loss)
@@ -228,6 +234,90 @@ class GAILAgent(object):
                 metrics['clip_frac'].append(clip_frac)
                 metrics['v_loss'].append(v_loss)
                 metrics['p_loss'].append(p_loss)
+
+                if self.hps.kye_p:
+
+                    # Sub-optimal potential re-definitions here
+                    # but easier to debut and with little over-head
+                    if self.hps.wrap_absorb:
+                        _state = batch['obs0_orig'].to(self.device)
+                    else:
+                        _state = batch['obs0'].to(self.device)
+                    state = batch['obs0'].to(self.device)
+                    next_state = batch['obs1'].to(self.device)
+                    action = batch['acs'].to(self.device)
+                    if self.hps.wrap_absorb:
+                        _, indices = self.remove_absorbing(state)
+                        _state = _state[indices, :]
+                        state = state[indices, :]
+                        next_state = next_state[indices, :]
+                        action = action[indices, :]
+                    _aux_loss = F.smooth_l1_loss(
+                        input=self.policy.auxo(_state),
+                        target=self.get_reward(state, action, next_state),
+                        reduction='none',
+                    )
+
+                    # Init collections of gradients
+                    grads_a_list = []
+                    grads_b_list = []
+                    for i in range(_state.size(0)):
+                        # Compute the gradients of the shared weights for the main task
+                        inputs = self.policy.perception_stack.encoder_1.fc_block.fc.weight
+                        grads_a = autograd.grad(outputs=[_p_loss[i, ...]],
+                                                inputs=[inputs],
+                                                only_inputs=True,
+                                                grad_outputs=[torch.ones_like(_p_loss[i, ...])],
+                                                retain_graph=True,
+                                                create_graph=True,
+                                                allow_unused=True)
+                        # Compute the gradients of the shared weights for the auxiliary task
+                        grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
+                                                inputs=[inputs],
+                                                only_inputs=True,
+                                                grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                                                retain_graph=True,
+                                                create_graph=True,
+                                                allow_unused=True)
+                        grads_a_list.append(grads_a[0])
+                        grads_b_list.append(grads_b[0])
+                    grads_a = torch.stack(grads_a_list, dim=0).sum(dim=-1)
+                    grads_b = torch.stack(grads_b_list, dim=0).sum(dim=-1)
+                    cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
+                    cos_sims = cos_sims.detach()  # safety measure
+                    metrics['cos_sim'].append(cos_sims.mean())
+
+                    # Assemble losses
+
+                    assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
+                    _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
+                    _aux_loss *= self.hps.kye_p_scale
+
+                    aux_loss = _aux_loss.mean()
+                    metrics['aux_loss'].append(aux_loss)
+
+                    if self.hps.kye_mixing:
+                        # Add mixing auxiliary loss
+                        e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
+                        if self.hps.wrap_absorb:
+                            _state_e = e_batch['obs0_orig']
+                        else:
+                            _state_e = e_batch['obs0']
+                        state_e = e_batch['obs0']
+                        next_state_e = e_batch['obs1']
+                        action_e = e_batch['acs']
+                        if self.hps.wrap_absorb:
+                            _, indices = self.remove_absorbing(state_e)
+                            _state_e = _state_e[indices, :]
+                            state_e = state_e[indices, :]
+                            next_state_e = next_state_e[indices, :]
+                            action_e = action_e[indices, :]
+                        aux_loss += F.smooth_l1_loss(
+                            input=self.policy.auxo(_state_e),
+                            target=self.get_reward(state_e, action_e, next_state_e),
+                        )
+
+                    p_loss += aux_loss
 
                 # Update parameters
                 self.p_optimizer.zero_grad()
@@ -246,76 +336,20 @@ class GAILAgent(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics, self.scheduler.get_last_lr()
 
-    def update_reward_control(self, d_rollout):
-        """Update the policy and value networks"""
-
-        d_keys = ['obs0', 'obs1', 'acs']
-        d_dataset = Dataset({k: d_rollout[k] for k in d_keys})
-        d_dataloader = DataLoader(
-            d_dataset,
-            self.e_batch_size,
-            shuffle=True,
-            drop_last=True,
-        )
-
-        for d_batch in d_dataloader:  # go through the whole d_rollout
-            logger.info("[INFO] updating reward control")
-
-            # Transfer to device
-            _state = d_batch['obs0'].to(self.device)
-            state = d_batch['obs0'].to(self.device)
-            next_state = d_batch['obs1'].to(self.device)
-            action = d_batch['acs'].to(self.device)
-            if self.hps.wrap_absorb:
-                _, indices_a = self.remove_absorbing(state)
-                _, indices_b = self.remove_absorbing(next_state)
-                indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
-                _state = _state[indices, 0:-1]
-                state = state[indices, :]
-                next_state = next_state[indices, :]
-                action = action[indices, :]
-
-            aux_loss = F.smooth_l1_loss(
-                input=self.policy.auxo(_state),
-                target=self.get_reward(state, action, next_state)
-            )
-            if self.hps.kye_mixing:
-                e_batch = next(iter(self.e_dataloader))  # get a minibatch of expert data
-                _state_e = e_batch['obs0']
-                state_e = e_batch['obs0']
-                next_state_e = e_batch['obs1']
-                action_e = e_batch['acs']
-                if self.hps.wrap_absorb:
-                    _, indices_a = self.remove_absorbing(state_e)
-                    _, indices_b = self.remove_absorbing(next_state_e)
-                    indices = sorted(list(set(indices_a) & set(indices_b)))  # intersection
-                    _state_e = _state_e[indices, 0:-1]
-                    state_e = state_e[indices, :]
-                    next_state_e = next_state_e[indices, :]
-                    action_e = action_e[indices, :]
-                aux_loss += F.smooth_l1_loss(
-                    input=self.policy.auxo(_state_e),
-                    target=self.get_reward(state_e, action_e, next_state_e)
-                )
-            aux_loss *= self.hps.kye_p_scale
-
-            # Update parameters
-            self.p_optimizer.zero_grad()
-            aux_loss.backward()
-            average_gradients(self.policy, self.device)
-            if self.hps.clip_norm > 0:
-                U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
-            self.p_optimizer.step()
-
-    def update_discriminator(self, d_rollout, iters_so_far):
+    def update_discriminator(self, rollout, iters_so_far):
         """Update the discriminator network"""
 
         # Container for all the metrics
         metrics = defaultdict(list)
 
         # Create DataLoader object to iterate over transitions in rollouts
-        d_keys = ['obs0', 'acs']
-        d_dataset = Dataset({k: d_rollout[k] for k in d_keys})
+        d_keys = ['obs0']
+        if self.hps.state_only:
+            d_keys.append('obs1')
+        else:
+            d_keys.append('acs')
+
+        d_dataset = Dataset({k: rollout[k] for k in d_keys})
         d_dataloader = DataLoader(
             d_dataset,
             self.e_batch_size,
@@ -330,20 +364,24 @@ class GAILAgent(object):
             d_batch = next(iter(d_dataloader))
 
             # Transfer to device
-            p_state = d_batch['obs0'].to(self.device)
-            p_action = d_batch['acs'].to(self.device)
-            e_state = e_batch['obs0'].to(self.device)
-            e_action = e_batch['acs'].to(self.device)
+            p_input_a = d_batch['obs0'].to(self.device)
+            e_input_a = e_batch['obs0'].to(self.device)
+            if self.hps.state_only:
+                p_input_b = d_batch['obs1'].to(self.device)
+                e_input_b = e_batch['obs1'].to(self.device)
+            else:
+                p_input_b = d_batch['acs'].to(self.device)
+                e_input_b = e_batch['acs'].to(self.device)
 
             # Update running moments
-            _state = torch.cat([p_state, e_state], dim=0)
+            _state = torch.cat([p_input_a, e_input_a], dim=0)
             if self.hps.wrap_absorb:
                 _state = self.remove_absorbing(_state)[0][:, 0:-1]
             self.discriminator.rms_obs.update(_state)
 
             # Compute scores
-            p_scores = self.discriminator.D(p_state, p_action)
-            e_scores = self.discriminator.D(e_state, e_action)
+            p_scores = self.discriminator.D(p_input_a, p_input_b)
+            e_scores = self.discriminator.D(e_input_a, e_input_b)
 
             # Create entropy loss
             scores = torch.cat([p_scores, e_scores], dim=0)
@@ -373,9 +411,9 @@ class GAILAgent(object):
                 e_loss = F.binary_cross_entropy_with_logits(input=e_scores,
                                                             target=real_labels,
                                                             reduction='none')
-                p_e_loss = p_loss + e_loss
+                _p_e_loss = p_loss + e_loss
             # Averate out over the batch
-            p_e_loss = p_e_loss.mean()
+            p_e_loss = _p_e_loss.mean()
 
             # Aggregated loss
             d_loss = p_e_loss + entropy_loss
@@ -383,73 +421,88 @@ class GAILAgent(object):
             # Log metrics
             metrics['entropy_loss'].append(entropy_loss)
             metrics['p_e_loss'].append(p_e_loss)
+            metrics['d_loss'].append(d_loss)
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                grad_pen_in = [p_state, p_action, e_state, e_action]
-                grad_pen = 10. * self.grad_pen(*grad_pen_in)
+                grad_pen = 10. * self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
 
             if self.hps.kye_d:
-                # Compute gradient of the feature extractor for d_loss
-                self.d_optimizer.zero_grad()
-                d_loss.backward(retain_graph=True)
-                if self.hps.spectral_norm:
-                    grads_d_loss = self.discriminator.ob_encoder.fc_block.fc.weight_orig.grad
-                else:
-                    grads_d_loss = self.discriminator.ob_encoder.fc_block.fc.weight.grad
-                grads_d_loss = grads_d_loss.mean(dim=0)
-                self.d_optimizer.zero_grad()
+
                 # Create and add auxiliary loss
                 if self.hps.wrap_absorb:
-                    _, p_indices = self.remove_absorbing(p_state)
-                    _p_state = p_state[p_indices, 0:-1]
-                    p_state = p_state[p_indices, :]
-                    p_action = p_action[p_indices, :]
+                    _, p_indices = self.remove_absorbing(p_input_a)
+                    _p_input_a = p_input_a[p_indices, 0:-1]
+                    p_input_a = p_input_a[p_indices, :]
+                    p_input_b = p_input_b[p_indices, :]
                 else:
-                    _p_state = p_state
-                aux_loss = F.smooth_l1_loss(
-                    input=self.discriminator.auxo(p_state, p_action),
-                    target=self.policy.sample(_p_state)
+                    _p_input_a = p_input_a
+                _aux_loss = F.smooth_l1_loss(
+                    input=self.discriminator.auxo(p_input_a, p_input_b),
+                    target=self.policy.sample(_p_input_a),
+                    reduction='none',
                 )
-                if self.hps.kye_mixing:
-                    if self.hps.wrap_absorb:
-                        _, e_indices = self.remove_absorbing(e_state)
-                        _e_state = e_state[e_indices, 0:-1]
-                        e_state = e_state[e_indices, :]
-                        e_action = e_action[e_indices, :]
-                    else:
-                        _e_state = e_state
-                    aux_loss += F.smooth_l1_loss(
-                        input=self.discriminator.auxo(e_state, e_action),
-                        target=self.policy.sample(_e_state)
-                    )
-                # Compute gradient of the feature exctractor for aux_loss
-                self.d_optimizer.zero_grad()
-                aux_loss.backward(retain_graph=True)
-                if self.hps.spectral_norm:
-                    grads_aux_loss = self.discriminator.ob_encoder.fc_block.fc.weight_orig.grad
-                else:
-                    grads_aux_loss = self.discriminator.ob_encoder.fc_block.fc.weight.grad
-                grads_aux_loss = grads_aux_loss.mean(dim=0)
-                self.d_optimizer.zero_grad()
-                # Compute the angle between the two computed gradients
-                angle = torch.acos(torch.dot(grads_d_loss, grads_aux_loss) /
-                                   (torch.norm(grads_d_loss) * torch.norm(grads_aux_loss)))
-                angle = angle.detach()
-                angle = angle / math.pi * 180.
-                # Log metrics
-                metrics['aux_loss'].append(aux_loss)
-                metrics['angle'].append(angle)
-                # Assemble losses
-                aux_loss *= self.hps.kye_d_scale
-                d_loss += aux_loss
-                # Log metrics
-                metrics['aux_loss_scaled'].append(aux_loss)
+                _aux_loss = _aux_loss.mean(dim=-1, keepdim=True)
 
-            metrics['d_loss'].append(d_loss)
+                # Init collections of gradients
+                grads_a_list = []
+                grads_b_list = []
+                for i in range(_p_input_a.size(0)):
+                    # Compute the gradients of the shared weights for the main task
+                    if self.hps.spectral_norm:
+                        inputs = self.discriminator.d_encoder.fc_block.fc.weight_orig
+                    else:
+                        inputs = self.discriminator.d_encoder.fc_block.fc.weight
+                    grads_a = autograd.grad(outputs=[_p_e_loss[i, ...]],  # without entropy loss
+                                            inputs=[inputs],
+                                            only_inputs=True,
+                                            grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
+                                            retain_graph=True,
+                                            create_graph=True,
+                                            allow_unused=True)
+                    # Compute the gradients of the shared weights for the auxiliary task
+                    grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
+                                            inputs=[inputs],
+                                            only_inputs=True,
+                                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                                            retain_graph=True,
+                                            create_graph=True,
+                                            allow_unused=True)
+                    grads_a_list.append(grads_a[0])
+                    grads_b_list.append(grads_b[0])
+                grads_a = torch.stack(grads_a_list, dim=0).sum(dim=-1)
+                grads_b = torch.stack(grads_b_list, dim=0).sum(dim=-1)
+                cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
+                cos_sims = cos_sims.detach()  # safety measure
+                metrics['cos_sim'].append(cos_sims.mean())
+
+                # Assemble losses
+
+                assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
+                _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
+                _aux_loss *= self.hps.kye_d_scale
+
+                aux_loss = _aux_loss.mean()
+                metrics['aux_loss'].append(aux_loss)
+
+                if self.hps.kye_mixing:
+                    # Add mixing auxiliary loss
+                    if self.hps.wrap_absorb:
+                        _, e_indices = self.remove_absorbing(e_input_a)
+                        _e_input_a = e_input_a[e_indices, 0:-1]
+                        e_input_a = e_input_a[e_indices, :]
+                        e_input_b = e_input_b[e_indices, :]
+                    else:
+                        _e_input_a = e_input_a
+                    aux_loss += F.smooth_l1_loss(
+                        input=self.discriminator.auxo(e_input_a, e_input_b),
+                        target=self.policy.sample(_e_input_a),
+                    )
+
+                d_loss += aux_loss
 
             # Update parameters
             self.d_optimizer.zero_grad()
@@ -460,55 +513,49 @@ class GAILAgent(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics
 
-    def grad_pen(self, p_ob, p_ac, e_ob, e_ac):
-        """Gradient penalty regularizer (motivation from Wasserstein GANs (Gulrajani),
-        but empirically useful in JS-GANs (Lucic et al. 2017)) and later in (Karol et al. 2018).
-        """
-        # Assemble interpolated state-action pair
-        if self.hps.wrap_absorb:
-            ob_dim = self.ob_dim + 1
-            ac_dim = self.ac_dim + 1
-        else:
-            ob_dim = self.ob_dim
-            ac_dim = self.ac_dim
-        ob_eps = torch.rand(ob_dim).to(p_ob.device)
-        ac_eps = torch.rand(ac_dim).to(p_ob.device)
-        ob_interp = ob_eps * p_ob + ((1. - ob_eps) * e_ob)
-        ac_interp = ac_eps * p_ac + ((1. - ac_eps) * e_ac)
+    def grad_pen(self, p_input_a, p_input_b, e_input_a, e_input_b):
+        """Define the gradient penalty regularizer"""
+        # Assemble interpolated inputs
+        eps_a = torch.rand_like(p_input_a)  # default device is input device
+        eps_b = torch.rand_like(p_input_b)  # default device is input device
+        input_a_i = eps_a * p_input_a + ((1. - eps_a) * e_input_a)
+        input_b_i = eps_b * p_input_b + ((1. - eps_b) * e_input_b)
         # Set `requires_grad=True` to later have access to
         # gradients w.r.t. the inputs (not populated by default)
-        ob_interp = Variable(ob_interp, requires_grad=True)
-        ac_interp = Variable(ac_interp, requires_grad=True)
+        input_a_i = Variable(input_a_i, requires_grad=True)
+        input_b_i = Variable(input_b_i, requires_grad=True)
         # Create the operation of interest
-        score = self.discriminator.D(ob_interp, ac_interp)
+        score = self.discriminator.D(input_a_i, input_b_i)
         # Get the gradient of this operation with respect to its inputs
         grads = autograd.grad(outputs=score,
-                              inputs=[ob_interp, ac_interp],
+                              inputs=[input_a_i, input_b_i],
                               only_inputs=True,
-                              grad_outputs=torch.ones(score.size()).to(p_ob.device),
+                              grad_outputs=torch.ones(score.size()).to(self.device),
                               retain_graph=True,
                               create_graph=True,
                               allow_unused=self.hps.state_only)
         assert len(list(grads)) == 2, "length must be exactly 2"
         # Return the gradient penalty (try to induce 1-Lipschitzness)
-        if self.hps.state_only:
-            grads = grads[0]
         grads_concat = torch.cat(list(grads), dim=-1)
         return (grads_concat.norm(2, dim=-1) - 1.).pow(2).mean()
 
-    def get_reward(self, curr_ob, ac, next_ob):
-        # Define the obeservation to get the reward of
-        ob = next_ob if self.hps.state_only else curr_ob
+    def get_reward(self, state, action, next_state):
+        # Define the discriminator inputs
+        input_a = state
+        if self.hps.state_only:
+            input_b = next_state
+        else:
+            input_b = action
         # Craft surrogate reward
-        assert sum([isinstance(x, torch.Tensor) for x in [ob, ac]]) in [0, 2]
-        if not isinstance(ob, torch.Tensor):  # then ac is not neither
-            ob = torch.Tensor(ob)
-            ac = torch.Tensor(ac)
+        assert sum([isinstance(x, torch.Tensor) for x in [input_a, input_b]]) in [0, 2]
+        if not isinstance(input_a, torch.Tensor):  # then the other is not neither
+            input_a = torch.Tensor(input_a)
+            input_b = torch.Tensor(input_b)
         # Transfer to cpu
-        ob = ob.cpu()
-        ac = ac.cpu()
+        input_a = input_a.cpu()
+        input_b = input_b.cpu()
         # Compure score
-        score = self.discriminator.D(ob, ac).detach().view(-1, 1)
+        score = self.discriminator.D(input_a, input_b).detach().view(-1, 1)
         # Counterpart of GAN's minimax (also called "saturating") loss
         # Numerics: 0 for non-expert-like states, goes to +inf for expert-like states
         # compatible with envs with traj cutoffs for bad (non-expert-like) behavior
