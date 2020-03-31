@@ -44,14 +44,14 @@ BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'shared_value',
 BENCH = CONFIG['parameters']['benchmark']
 if BENCH == 'mujoco':
     TOC = {
-        'debug': ['HalfCheetah-v3'],
+        'debug': ['Hopper-v3'],
         'flareon': ['InvertedPendulum-v2',
                     'InvertedDoublePendulum-v2',
                     'Hopper-v3'],
-        'glaceon': ['Walker2d-v3',
+        'glaceon': ['Hopper-v3',
+                    'Walker2d-v3',
                     'HalfCheetah-v3',
-                    'Ant-v3',
-                    'Humanoid-v3'],
+                    'Ant-v3'],
         'humanoid': ['Humanoid-v3'],
         'suite': ['InvertedPendulum-v2',
                   'InvertedDoublePendulum-v2',

@@ -147,10 +147,6 @@ def gail_rollout_generator(env, agent, rollout_len):
         new_ob, env_rew, done, _ = env.step(ac)
 
         # Populate collections
-        rollout['vs'].append(v)
-        rollout['logps'].append(logp)
-        rollout['env_rews'].append(env_rew)
-        rollout['dones'].append(done)
         if agent.hps.wrap_absorb:
             rollout['obs0_orig'].append(ob)
             rollout['acs_orig'].append(ac)
@@ -159,27 +155,46 @@ def gail_rollout_generator(env, agent, rollout_len):
             _ac = np.append(ac, 0)
             rollout['obs0'].append(_ob)
             rollout['acs'].append(_ac)
+            rollout['vs'].append(v)
+            rollout['logps'].append(logp)
+            rollout['env_rews'].append(env_rew)
+            rollout['dones'].append(done)
             if done and not env._elapsed_steps == env._max_episode_steps:
                 # Wrap with an absorbing state
                 _new_ob = np.append(np.zeros(agent.ob_shape), 1)
                 rollout['obs1'].append(_new_ob)
+                syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
+                syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
+                rollout['syn_rews'].append(syn_rew)
                 # Add absorbing transition
+                rollout['obs0_orig'].append(ob)
+                rollout['acs_orig'].append(ac)
+                rollout['obs1_orig'].append(new_ob)
                 rollout['obs0'].append(np.append(np.zeros(agent.ob_shape), 1))
                 rollout['acs'].append(np.append(np.zeros(agent.ac_shape), 1))
                 rollout['obs1'].append(np.append(np.zeros(agent.ob_shape), 1))
+                rollout['vs'].append(v)
+                rollout['logps'].append(logp)
+                rollout['env_rews'].append(env_rew)
+                rollout['dones'].append(done)
+                rollout['syn_rews'].append(syn_rew)
             else:
                 _new_ob = np.append(new_ob, 0)
                 rollout['obs1'].append(_new_ob)
-            # Get synthetic rewards
-            syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
+                syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
+                syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
+                rollout['syn_rews'].append(syn_rew)
         else:
             rollout['obs0'].append(ob)
             rollout['acs'].append(ac)
             rollout['obs1'].append(new_ob)
-            # Get synthetic rewards
+            rollout['vs'].append(v)
+            rollout['logps'].append(logp)
+            rollout['env_rews'].append(env_rew)
+            rollout['dones'].append(done)
             syn_rew = agent.get_reward(ob[None], ac[None], new_ob[None])
-        syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
-        rollout['syn_rews'].append(syn_rew)
+            syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
+            rollout['syn_rews'].append(syn_rew)
 
         # Update current episode statistics
         cur_ep_len += 1

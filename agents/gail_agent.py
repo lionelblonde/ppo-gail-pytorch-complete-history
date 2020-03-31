@@ -168,11 +168,12 @@ class GAILAgent(object):
         if self.hps.wrap_absorb:
             keys.extend(['obs0_orig', 'obs1_orig', 'acs_orig'])
         dataset = Dataset({k: rollout[k] for k in keys})
+
         dataloader = DataLoader(
             dataset,
             self.hps.batch_size,
             shuffle=True,
-            drop_last=False,  # no compatibility issue, only used for policy alone
+            drop_last=True,
         )
 
         for _ in range(self.hps.optim_epochs_per_iter):
