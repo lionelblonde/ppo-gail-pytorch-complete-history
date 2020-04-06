@@ -269,21 +269,25 @@ class GAILAgent(object):
                     grads_b_list = []
                     for i in range(_state.size(0)):
                         # Compute the gradients of the shared weights for the main task
-                        grads_a = autograd.grad(outputs=[_p_loss[i, ...]],
-                                                inputs=[*inputs],
-                                                only_inputs=True,
-                                                grad_outputs=[torch.ones_like(_p_loss[i, ...])],
-                                                retain_graph=True,
-                                                create_graph=True,
-                                                allow_unused=True)
+                        grads_a = autograd.grad(
+                            outputs=[_p_loss[i, ...]],
+                            inputs=[*inputs],
+                            only_inputs=True,
+                            grad_outputs=[torch.ones_like(_p_loss[i, ...])],
+                            retain_graph=True,
+                            create_graph=True,
+                            allow_unused=True,
+                        )
                         # Compute the gradients of the shared weights for the auxiliary task
-                        grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
-                                                inputs=[*inputs],
-                                                only_inputs=True,
-                                                grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
-                                                retain_graph=True,
-                                                create_graph=True,
-                                                allow_unused=True)
+                        grads_b = autograd.grad(
+                            outputs=[_aux_loss[i, ...]],
+                            inputs=[*inputs],
+                            only_inputs=True,
+                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                            retain_graph=True,
+                            create_graph=True,
+                            allow_unused=True,
+                        )
                         grads_a = torch.cat(list(grads_a), dim=-1)
                         grads_b = torch.cat(list(grads_b), dim=-1)
                         grads_a_list.append(grads_a)
@@ -433,7 +437,7 @@ class GAILAgent(object):
 
             if self.hps.grad_pen:
                 # Create gradient penalty loss (coefficient from the original paper)
-                grad_pen, gradgrads = self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
+                grad_pen = self.grad_pen(p_input_a, p_input_b, e_input_a, e_input_b)
                 grad_pen *= 10.
                 d_loss += grad_pen
                 # Log metrics
@@ -466,21 +470,25 @@ class GAILAgent(object):
                 grads_b_list = []
                 for i in range(_p_input_a.size(0)):
                     # Compute the gradients of the shared weights for the main task
-                    grads_a = autograd.grad(outputs=[_p_e_loss[i, ...]],  # without entropy loss
-                                            inputs=[*inputs],
-                                            only_inputs=True,
-                                            grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
-                                            retain_graph=True,
-                                            create_graph=True,
-                                            allow_unused=True)
+                    grads_a = autograd.grad(
+                        outputs=[_p_e_loss[i, ...]],  # without entropy loss
+                        inputs=[*inputs],
+                        only_inputs=True,
+                        grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
+                        retain_graph=True,
+                        create_graph=True,
+                        allow_unused=True,
+                    )
                     # Compute the gradients of the shared weights for the auxiliary task
-                    grads_b = autograd.grad(outputs=[_aux_loss[i, ...]],
-                                            inputs=[*inputs],
-                                            only_inputs=True,
-                                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
-                                            retain_graph=True,
-                                            create_graph=True,
-                                            allow_unused=True)
+                    grads_b = autograd.grad(
+                        outputs=[_aux_loss[i, ...]],
+                        inputs=[*inputs],
+                        only_inputs=True,
+                        grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                        retain_graph=True,
+                        create_graph=True,
+                        allow_unused=True,
+                    )
                     grads_a = torch.cat(list(grads_a), dim=-1)
                     grads_b = torch.cat(list(grads_b), dim=-1)
                     grads_a_list.append(grads_a)
@@ -490,12 +498,6 @@ class GAILAgent(object):
                 cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
                 cos_sims = cos_sims.detach()  # safety measure
                 metrics['cos_sim'].append(cos_sims.mean())
-
-                # FIXME
-                grad_pen_cos_sims = F.cosine_similarity(grads_a.mean(dim=0).unsqueeze(0),
-                                                        gradgrads.unsqueeze(0))
-                metrics['grad_pen_cos_sim'].append(grad_pen_cos_sims.mean())
-                # FIXME
 
                 # Assemble losses
 
@@ -560,26 +562,7 @@ class GAILAgent(object):
         grads = torch.cat(list(grads), dim=-1)
         _grad_pen = (grads.norm(2, dim=-1) - 1.).pow(2)
         grad_pen = _grad_pen.mean()
-
-        inputs = []
-        for n, p in self.discriminator.d_encoder.named_parameters():
-            if p.requires_grad:
-                if len(p.shape) == 1:  # ignore the bias vectors
-                    continue
-                inputs.append(p)
-
-        gradgrads = autograd.grad(
-            outputs=_grad_pen,
-            inputs=[*inputs],
-            only_inputs=True,
-            grad_outputs=[torch.ones_like(_grad_pen)],
-            retain_graph=True,
-            create_graph=True,
-            allow_unused=self.hps.state_only,
-        )
-        gradgrads = torch.cat(list(gradgrads), dim=-1)
-
-        return grad_pen, gradgrads
+        return grad_pen
 
     def get_reward(self, state, action, next_state):
         # Define the discriminator inputs
