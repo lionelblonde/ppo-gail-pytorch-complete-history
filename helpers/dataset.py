@@ -59,14 +59,14 @@ class DemoDataset(Dataset):
             # Extract and display content dims
             dims = {k: tmp[k].shape[1:] for k in tmp.keys()}
             dims = ' | '.join(["{}={}".format(k, v) for k, v in dims.items()])
-            logger.info("[INFO]      dims: {}".format(dims))
+            logger.info("     dims: {}".format(dims))
             # Get episode statistics
             ep_len = tmp.pop('ep_lens', None)  # return and delete key
             ep_ret = tmp.pop('ep_env_rets', None)  # return and delete key
             assert isinstance(ep_len, np.int64), "each file should contain only one episode"
             assert isinstance(ep_ret, np.float64), "each file should contain only one episode"
-            logger.info("[INFO]      {}{}".format("ep_len".ljust(20, '-'), ep_len))
-            logger.info("[INFO]      {}{}".format("ep_ret".ljust(20, '-'), ep_ret))
+            logger.info("     {}{}".format("ep_len".ljust(20, '-'), ep_len))
+            logger.info("     {}{}".format("ep_ret".ljust(20, '-'), ep_ret))
             self.stats['ep_len'].append(ep_len)
             self.stats['ep_ret'].append(ep_ret)
             # Determine if terminal because of timeout or real termination
@@ -77,8 +77,8 @@ class DemoDataset(Dataset):
             start = np.random.randint(low=0, high=sub_rate)
             indices = [start + (i * sub_rate) for i in range(ep_len // sub_rate)]
             ep_len = len(indices)  # overwrite ep_len
-            logger.info("[INFO]      {}{}".format("subsample".ljust(20, '-'),
-                                                  "{}(sub_rate={})".format(ep_len, sub_rate)))
+            logger.info("     {}{}".format("subsample".ljust(20, '-'),
+                                           "{}(sub_rate={})".format(ep_len, sub_rate)))
             for k in tmp.keys():
                 tmp[k] = tmp[k][indices]
 
@@ -88,7 +88,7 @@ class DemoDataset(Dataset):
                     # If the last subsampled transition is done, then it must be
                     # the very last transition of the episode, and testing whether it is
                     # a true terminal state is given by 'terminal' determined above.
-                    logger.info("[INFO] >>>> wrapping with absorbing transition <<<<")
+                    logger.info(">>>> wrapping with absorbing transition <<<<")
                     # Wrap with an absorbing state
                     obs0 = np.concatenate(
                         [tmp['obs0'],
@@ -149,8 +149,8 @@ class DemoDataset(Dataset):
             self.data[k] = np.concatenate(v, axis=0)
 
         # Log demos' statistics
-        logger.info("[INFO] keys extracted: {}".format(list(self.data.keys())))
+        logger.info("keys extracted: {}".format(list(self.data.keys())))
         lens, rets = self.stats['ep_len'], self.stats['ep_ret']
-        logger.info("[INFO] got {} transitions, from {} eps".format(len(self), self.num_demos))
-        logger.info("[INFO] episodic length: {}({})".format(np.mean(lens), np.std(lens)))
-        logger.info("[INFO] episodic return: {}({})".format(np.mean(rets), np.std(rets)))
+        logger.info("got {} transitions, from {} eps".format(len(self), self.num_demos))
+        logger.info("episodic length: {}({})".format(np.mean(lens), np.std(lens)))
+        logger.info("episodic return: {}({})".format(np.mean(rets), np.std(rets)))

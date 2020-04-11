@@ -33,7 +33,7 @@ class PPOAgent(object):
         self.device = device
         self.hps = hps
         if self.hps.clip_norm <= 0:
-            logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
+            logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
         # Create nets
         Policy = CatPolicy if self.is_discrete else GaussPolicy

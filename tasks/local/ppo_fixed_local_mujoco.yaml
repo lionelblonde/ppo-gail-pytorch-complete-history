@@ -27,6 +27,7 @@ parameters:
 
   # Model
   perception_stack: 'shallow_mlp'
+  layer_norm: true
   shared_value: true
 
   # Optimization

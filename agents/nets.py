@@ -200,38 +200,23 @@ class CatToolkit(object):
 
 class ShallowMLP(nn.Module):
 
-    def __init__(self, env, hps, hidsize, extrahid=False):
+    def __init__(self, env, hps, hidsize):
         """MLP layer stack as usually used in Deep RL"""
         super(ShallowMLP, self).__init__()
         ob_dim = env.observation_space.shape[0]
-        self.extrahid = extrahid
-        # Assemble fully-connected encoder
-        self.encoder_1 = nn.Sequential(OrderedDict([
+        # Assemble fully-connected stack
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(ob_dim, hidsize)),
-                ('ln', nn.LayerNorm(hidsize)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(hidsize)),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
-        if self.extrahid:
-            self.encoder_2 = nn.Sequential(OrderedDict([
-                ('fc_block', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(hidsize, hidsize)),
-                    ('ln', nn.LayerNorm(hidsize)),
-                    ('nl', nn.Tanh()),
-                ]))),
-            ]))
-            # Create skip connection
-            self.skip_co = nn.Sequential()
         # Perform initialization
-        self.encoder_1.apply(init(weight_scale=5./3.))
-        if self.extrahid:
-            self.encoder_2.apply(init(weight_scale=0.1))  # lower init scale because extrahid
+        self.fc_stack.apply(init(weight_scale=5./3.))
 
     def forward(self, x):
-        x = self.encoder_1(x)
-        if self.extrahid:
-            x = self.skip_co(x) + self.encoder_2(x)
+        x = self.fc_stack(x)
         return x
 
 
@@ -240,8 +225,8 @@ class TeenyTinyCNN(nn.Module):
     def __init__(self, env, hps):
         super(TeenyTinyCNN, self).__init__()
         in_width, in_height, in_chan = env.observation_space.shape
-        # Assemble the convolutional encoder
-        self.encoder = nn.Sequential(OrderedDict([
+        # Assemble the convolutional stack
+        self.conv2d_stack = nn.Sequential(OrderedDict([
             ('conv2d_block_1', nn.Sequential(OrderedDict([
                 ('conv2d', nn.Conv2d(in_chan, 16, kernel_size=4, stride=2, padding=0)),
                 ('nl', nn.ReLU()),
@@ -251,19 +236,19 @@ class TeenyTinyCNN(nn.Module):
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        # Assemble the fully-connected decoder
-        self.decoder = nn.Sequential(OrderedDict([
+        # Assemble the fully-connected stack
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(32 * conv_to_fc(self.encoder, in_width, in_height), 64)),
-                ('ln', nn.LayerNorm(64)),
+                ('fc', nn.Linear(32 * conv_to_fc(self.conv2d_stack, in_width, in_height), 64)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(64)),
                 # According to the paper "Parameter Space Noise for Exploration", layer
                 # normalization should only be used for the fully-connected part of the network.
                 ('nl', nn.ReLU()),
             ]))),
         ]))
         # Perform initialization
-        self.encoder.apply(init(weight_scale=math.sqrt(2)))
-        self.decoder.apply(init(weight_scale=math.sqrt(2)))
+        self.conv2d_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -271,11 +256,11 @@ class TeenyTinyCNN(nn.Module):
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
-        x = self.encoder(x)
+        x = self.conv2d_stack(x)
         # Flatten the feature maps into a vector
         x = x.view(x.size(0), -1)
         # Stack the fully-connected layers
-        x = self.decoder(x)
+        x = self.fc_stack(x)
         # Return the resulting embedding
         return x
 
@@ -288,8 +273,8 @@ class NatureCNN(nn.Module):
         """
         super(NatureCNN, self).__init__()
         in_width, in_height, in_chan = env.observation_space.shape
-        # Assemble the convolutional encoder
-        self.encoder = nn.Sequential(OrderedDict([
+        # Assemble the convolutional stack
+        self.conv2d_stack = nn.Sequential(OrderedDict([
             ('conv2d_block_1', nn.Sequential(OrderedDict([
                 ('conv2d', nn.Conv2d(in_chan, 16, kernel_size=8, stride=4, padding=0)),
                 ('nl', nn.ReLU()),
@@ -303,19 +288,19 @@ class NatureCNN(nn.Module):
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        # Assemble the fully-connected decoder
-        self.decoder = nn.Sequential(OrderedDict([
+        # Assemble the fully-connected stack
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(64 * conv_to_fc(self.encoder, in_width, in_height), 512)),
-                ('ln', nn.LayerNorm(512)),
+                ('fc', nn.Linear(64 * conv_to_fc(self.conv2d_stack, in_width, in_height), 512)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(512)),
                 # According to the paper "Parameter Space Noise for Exploration", layer
                 # normalization should only be used for the fully-connected part of the network.
                 ('nl', nn.ReLU()),
             ]))),
         ]))
         # Perform initialization
-        self.encoder.apply(init(weight_scale=math.sqrt(2)))
-        self.decoder.apply(init(weight_scale=math.sqrt(2)))
+        self.conv2d_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -323,11 +308,11 @@ class NatureCNN(nn.Module):
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
-        x = self.encoder(x)
+        x = self.conv2d_stack(x)
         # Flatten the feature maps into a vector
         x = x.view(x.size(0), -1)
         # Stack the fully-connected layers
-        x = self.decoder(x)
+        x = self.fc_stack(x)
         # Return the resulting embedding
         return x
 
@@ -341,8 +326,8 @@ class SmallImpalaCNN(nn.Module):
         """
         super(SmallImpalaCNN, self).__init__()
         in_width, in_height, in_chan = env.observation_space.shape
-        # Assemble the convolutional encoder
-        self.encoder = nn.Sequential(OrderedDict([
+        # Assemble the convolutional stack
+        self.conv2d_stack = nn.Sequential(OrderedDict([
             ('conv2d_block_1', nn.Sequential(OrderedDict([
                 ('conv2d', nn.Conv2d(in_chan, 16, kernel_size=8, stride=4, padding=0)),
                 ('nl', nn.ReLU()),
@@ -352,19 +337,19 @@ class SmallImpalaCNN(nn.Module):
                 ('nl', nn.ReLU()),
             ]))),
         ]))
-        # Assemble the fully-connected decoder
-        self.decoder = nn.Sequential(OrderedDict([
+        # Assemble the fully-connected stack
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(32 * conv_to_fc(self.encoder, in_width, in_height), 256)),
-                ('ln', nn.LayerNorm(256)),
+                ('fc', nn.Linear(32 * conv_to_fc(self.conv2d_stack, in_width, in_height), 256)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(256)),
                 # According to the paper "Parameter Space Noise for Exploration", layer
                 # normalization should only be used for the fully-connected part of the network.
                 ('nl', nn.ReLU()),
             ]))),
         ]))
         # Perform initialization
-        self.encoder.apply(init(weight_scale=math.sqrt(2)))
-        self.decoder.apply(init(weight_scale=math.sqrt(2)))
+        self.conv2d_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -372,11 +357,11 @@ class SmallImpalaCNN(nn.Module):
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
-        x = self.encoder(x)
+        x = self.conv2d_stack(x)
         # Flatten the feature maps into a vector
         x = x.view(x.size(0), -1)
         # Stack the fully-connected layers
-        x = self.decoder(x)
+        x = self.fc_stack(x)
         # Return the resulting embedding
         return x
 
@@ -390,18 +375,18 @@ class LargeImpalaCNN(nn.Module):
         """
         super(LargeImpalaCNN, self).__init__()
         in_width, in_height, in_chan = env.observation_space.shape
-        # Assemble the convolutional encoder
-        self.encoder = nn.Sequential(OrderedDict([
+        # Assemble the convolutional stack
+        self.conv2d_stack = nn.Sequential(OrderedDict([
             ('impala_block_1', ImpalaBlock(in_chan, 16)),
             ('impala_block_2', ImpalaBlock(16, 32)),
             ('impala_block_3', ImpalaBlock(32, 32)),
             ('nl', nn.ReLU()),
         ]))
-        # Assemble the fully-connected decoder
-        self.decoder = nn.Sequential(OrderedDict([
+        # Assemble the fully-connected stack
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(32 * conv_to_fc(self.encoder, in_width, in_height), 256)),
-                ('ln', nn.LayerNorm(256)),
+                ('fc', nn.Linear(32 * conv_to_fc(self.conv2d_stack, in_width, in_height), 256)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(256)),
                 # According to the paper "Parameter Space Noise for Exploration", layer
                 # normalization should only be used for the fully-connected part of the network.
                 ('nl', nn.ReLU()),
@@ -409,7 +394,7 @@ class LargeImpalaCNN(nn.Module):
         ]))
         # Perform initialization
         # Encoder already initialized at this point.
-        self.decoder.apply(init(weight_scale=math.sqrt(2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
         # Normalize the observations
@@ -417,20 +402,18 @@ class LargeImpalaCNN(nn.Module):
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
-        x = self.encoder(x)
+        x = self.conv2d_stack(x)
         # Flatten the feature maps into a vector
         x = x.view(x.size(0), -1)
         # Stack the fully-connected layers
-        x = self.decoder(x)
+        x = self.fc_stack(x)
         # Return the resulting embedding
         return x
 
 
 def perception_stack_parser(x):
     if x == 'shallow_mlp':
-        return (lambda u, v: ShallowMLP(u, v, hidsize=100, extrahid=False)), 100
-    elif x == 'shallow_mlp_2':
-        return (lambda u, v: ShallowMLP(u, v, hidsize=100, extrahid=True)), 100
+        return (lambda u, v: ShallowMLP(u, v, hidsize=100)), 100
     elif x == 'teeny_tiny_cnn':
         return (lambda u, v: TeenyTinyCNN(u, v)), 64
     elif x == 'nature_cnn':
@@ -457,42 +440,42 @@ class GaussPolicy(nn.Module):
         net_lambda, fc_in = perception_stack_parser(self.hps.perception_stack)
         self.perception_stack = net_lambda(env, self.hps)
         # Assemble the last layers and output heads
-        self.p_decoder = nn.Sequential(OrderedDict([
+        self.p_fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(fc_in, fc_in)),
-                ('ln', nn.LayerNorm(fc_in)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(fc_in)),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
         self.p_head = nn.Linear(fc_in, ac_dim)
         self.ac_logstd_head = nn.Parameter(torch.full((ac_dim,), math.log(0.6)))
         if self.hps.shared_value:
-            self.v_decoder = nn.Sequential(OrderedDict([
+            self.v_fc_stack = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(fc_in, fc_in)),
-                    ('ln', nn.LayerNorm(fc_in)),
+                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(fc_in)),
                     ('nl', nn.Tanh()),
                 ]))),
             ]))
             self.v_head = nn.Linear(fc_in, 1)
         if self.hps.kye_p:
-            self.r_decoder = nn.Sequential(OrderedDict([
+            self.r_fc_stack = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(fc_in, fc_in)),
-                    ('ln', nn.LayerNorm(fc_in)),
+                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(fc_in)),
                     ('nl', nn.Tanh()),
                 ]))),
             ]))
             self.r_skip_co = nn.Sequential()
             self.r_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.p_decoder.apply(init(weight_scale=5./3.))
+        self.p_fc_stack.apply(init(weight_scale=5./3.))
         self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
-            self.v_decoder.apply(init(weight_scale=5./3.))
+            self.v_fc_stack.apply(init(weight_scale=5./3.))
             self.v_head.apply(init(weight_scale=0.01))
         if self.hps.kye_p:
-            self.r_decoder.apply(init(weight_scale=5./3.))
+            self.r_fc_stack.apply(init(weight_scale=5./3.))
             self.r_head.apply(init(weight_scale=0.01))
 
     def logp(self, ob, ac):
@@ -541,14 +524,14 @@ class GaussPolicy(nn.Module):
     def forward(self, ob):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.perception_stack(ob)
-        ac_mean = self.p_head(self.p_decoder(x))
+        ac_mean = self.p_head(self.p_fc_stack(x))
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
         out = [ac_mean, ac_std]
         if self.hps.shared_value:
-            value = self.v_head(self.v_decoder(x))
+            value = self.v_head(self.v_fc_stack(x))
             out.append(value)
         if self.hps.kye_p:
-            aux = self.r_head(self.r_decoder(x))
+            aux = self.r_head(self.r_fc_stack(x))
             out.append(aux)
         return out
 
@@ -564,29 +547,29 @@ class CatPolicy(nn.Module):
         net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
         self.perception_stack = net_lambda(env, hps)
         # Assemble the last layers and output heads
-        self.p_decoder = nn.Sequential(OrderedDict([
+        self.p_fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(fc_in, fc_in)),
-                ('ln', nn.LayerNorm(fc_in)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(fc_in)),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
         self.p_head = nn.Linear(fc_in, ac_dim)
         if self.hps.shared_value:
             # Policy and value share their feature extractor
-            self.v_decoder = nn.Sequential(OrderedDict([
+            self.v_fc_stack = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(fc_in, fc_in)),
-                    ('ln', nn.LayerNorm(fc_in)),
+                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(fc_in)),
                     ('nl', nn.Tanh()),
                 ]))),
             ]))
             self.v_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.p_decoder.apply(init(weight_scale=5./3.))
+        self.p_fc_stack.apply(init(weight_scale=5./3.))
         self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
-            self.v_decoder.apply(init(weight_scale=5./3.))
+            self.v_fc_stack.apply(init(weight_scale=5./3.))
             self.v_head.apply(init(weight_scale=0.01))
 
     def logp(self, ob, ac):
@@ -629,10 +612,10 @@ class CatPolicy(nn.Module):
     def forward(self, ob):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.perception_stack(ob)
-        ac_logits = self.p_head(self.p_decoder(x))
+        ac_logits = self.p_head(self.p_fc_stack(x))
         out = [ac_logits]
         if self.hps.shared_value:
-            value = self.v_head(self.v_decoder(x))
+            value = self.v_head(self.v_fc_stack(x))
             out.append(value)
         return out
 
@@ -647,23 +630,23 @@ class Value(nn.Module):
         net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
         self.perception_stack = net_lambda(env, hps)
         # Assemble the last layers and output heads
-        self.v_decoder = nn.Sequential(OrderedDict([
+        self.v_fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(fc_in, fc_in)),
-                ('ln', nn.LayerNorm(fc_in)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(fc_in)),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
         self.v_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.v_decoder.apply(init(weight_scale=5./3.))
+        self.v_fc_stack.apply(init(weight_scale=5./3.))
         self.v_head.apply(init(weight_scale=0.01))
 
     def forward(self, ob):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.perception_stack(ob)
         x = self.perception_stack(ob)
-        value = self.v_head(self.v_decoder(x))
+        value = self.v_head(self.v_fc_stack(x))
         return value
 
 
@@ -679,8 +662,9 @@ class Discriminator(nn.Module):
         self.hps = hps
         self.leak = 0.1
         apply_sn = snwrap(use_sn=self.hps.spectral_norm)
-        # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        if self.hps.d_batch_norm:
+            # Define observation whitening
+            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define the input dimension
         in_dim = ob_dim
         if self.hps.state_only:
@@ -688,13 +672,13 @@ class Discriminator(nn.Module):
         else:
             in_dim += ac_dim
         # Assemble the layers and output heads
-        self.d_encoder = nn.Sequential(OrderedDict([
+        self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(in_dim, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
-        self.d_decoder = nn.Sequential(OrderedDict([
+        self.d_fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(100, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
@@ -703,20 +687,20 @@ class Discriminator(nn.Module):
         self.d_head = nn.Linear(100, 1)
         if self.hps.kye_d:
             assert self.hps.state_only, "only allowed in the state-only setting"
-            self.a_decoder = nn.Sequential(OrderedDict([
+            self.a_fc_stack = nn.Sequential(OrderedDict([
                 ('fc_block', nn.Sequential(OrderedDict([
                     ('fc', nn.Linear(100, 100)),
-                    ('ln', nn.LayerNorm(100)),
+                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(100)),
                     ('nl', nn.ReLU()),
                 ]))),
             ]))
             self.a_head = nn.Linear(100, env.action_space.shape[0])  # always original ac_dim
         # Perform initialization
-        self.d_encoder.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
-        self.d_decoder.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.d_fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.d_head.apply(init(weight_scale=0.01))
         if self.hps.kye_d:
-            self.a_decoder.apply(init(weight_scale=math.sqrt(2)))
+            self.a_fc_stack.apply(init(weight_scale=math.sqrt(2)))
             self.a_head.apply(init(weight_scale=0.01))
 
     def D(self, input_a, input_b):
@@ -728,29 +712,112 @@ class Discriminator(nn.Module):
         return out[1]  # aux
 
     def forward(self, input_a, input_b):
-        # Apply normalization
-        if self.hps.wrap_absorb:
-            # Normalize state
-            input_a_ = input_a.clone()[:, 0:-1]
-            input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
-            input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
-            if self.hps.state_only:
-                # Normalize next state
-                input_b_ = input_b.clone()[:, 0:-1]
-                input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
-                input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
+        if self.hps.d_batch_norm:
+            # Apply normalization
+            if self.hps.wrap_absorb:
+                # Normalize state
+                input_a_ = input_a.clone()[:, 0:-1]
+                input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
+                input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
+                if self.hps.state_only:
+                    # Normalize next state
+                    input_b_ = input_b.clone()[:, 0:-1]
+                    input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
+                    input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
+            else:
+                # Normalize state
+                input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
+                if self.hps.state_only:
+                    # Normalize next state
+                    input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
         else:
-            # Normalize state
-            input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
+            input_a = torch.clamp(input_a, -5., 5.)
             if self.hps.state_only:
-                # Normalize next state
-                input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
+                input_b = torch.clamp(input_b, -5., 5.)
         # Concatenate
         x = torch.cat([input_a, input_b], dim=-1)
-        x = self.d_encoder(x)
-        score = self.d_head(self.d_decoder(x))  # no sigmoid here
+        x = self.fc_stack(x)
+        score = self.d_head(self.d_fc_stack(x))  # no sigmoid here
         out = [score]
         if self.hps.kye_d:
-            action = self.a_head(self.a_decoder(x))
+            action = self.a_head(self.a_fc_stack(x))
             out.append(action)
         return out
+
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Random Network Distillation.
+
+class PredNet(nn.Module):
+
+    def __init__(self, env, hps):
+        super(PredNet, self).__init__()
+        ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
+        if hps.wrap_absorb:
+            ob_dim += 1
+            ac_dim += 1
+        self.hps = hps
+        self.leak = 0.1
+        if self.hps.rnd_batch_norm:
+            # Define observation whitening
+            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        # Define the input dimension
+        in_dim = ob_dim
+        if self.hps.state_only:
+            in_dim += ob_dim
+        else:
+            in_dim += ac_dim
+        # Assemble the layers
+        self.fc_stack = nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(in_dim, 300)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+            ]))),
+            ('fc_block_2', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(300, 300)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+            ]))),
+            ('fc_block_3', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(300, 300)),
+                ('nl', nn.LeakyReLU(negative_slope=self.leak, inplace=True)),
+            ]))),
+        ]))
+        # Perform initialization
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+
+    def forward(self, input_a, input_b):
+        if self.hps.rnd_batch_norm:
+            # Apply normalization
+            if self.hps.wrap_absorb:
+                # Normalize state
+                input_a_ = input_a.clone()[:, 0:-1]
+                input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
+                input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
+                if self.hps.state_only:
+                    # Normalize next state
+                    input_b_ = input_b.clone()[:, 0:-1]
+                    input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
+                    input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
+            else:
+                # Normalize state
+                input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
+                if self.hps.state_only:
+                    # Normalize next state
+                    input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
+        else:
+            input_a = torch.clamp(input_a, -5., 5.)
+            if self.hps.state_only:
+                input_b = torch.clamp(input_b, -5., 5.)
+        # Concatenate
+        x = torch.cat([input_a, input_b], dim=-1)
+        x = self.fc_stack(x)
+        return x
+
+
+class TargNet(PredNet):
+
+    def __init__(self, env, hps):
+        super(TargNet, self).__init__(env, hps)
+        # Prevent the weights from ever being updated
+        for param in self.fc_stack.parameters():
+            param.requires_grad = False

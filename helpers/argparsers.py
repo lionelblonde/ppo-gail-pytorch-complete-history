@@ -34,6 +34,7 @@ def argparser(description="PPO/GAIL Experiment"):
 
     # Model
     parser.add_argument('--perception_stack', type=str, default=None)
+    boolean_flag(parser, 'layer_norm', default=False)
     boolean_flag(parser, 'shared_value', default=False)
 
     # Optimization
@@ -64,17 +65,22 @@ def argparser(description="PPO/GAIL Experiment"):
                         type=int, default=None)
     boolean_flag(parser, 'spectral_norm', help='whether to use spectral norm', default=True)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
+    boolean_flag(parser, 'one_sided_pen', help='whether to use the one-sided version', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
-    parser.add_argument('--syn_rew_scale', type=float, default=1.0)
     boolean_flag(parser, 'wrap_absorb', default=False)
+    boolean_flag(parser, 'd_batch_norm', default=False)
 
     # KYE
     boolean_flag(parser, 'kye_p', default=False)
     parser.add_argument('--kye_p_scale', type=float, default=0.1)
     boolean_flag(parser, 'kye_d', default=False)
     parser.add_argument('--kye_d_scale', type=float, default=0.1)
-    boolean_flag(parser, 'kye_mixing', default=True)
+    boolean_flag(parser, 'kye_mixing', default=False)
+    boolean_flag(parser, 'adaptive_aux_scaling', default=False)
+
+    # RND
+    boolean_flag(parser, 'rnd_batch_norm', default=True)
 
     # PU
     boolean_flag(parser, 'use_purl', default=False)

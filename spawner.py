@@ -35,9 +35,11 @@ CONDA = CONFIG['resources']['conda_env']
 # Define experiment type
 TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
-BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'shared_value',
-             'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'wrap_absorb',
-             'kye_p', 'kye_d', 'kye_mixing',
+BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'layer_norm', 'shared_value',
+             'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
+             'wrap_absorb', 'd_batch_norm',
+             'kye_p', 'kye_d', 'kye_mixing', 'adaptive_aux_scaling',
+             'rnd_batch_norm',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
@@ -192,6 +194,7 @@ def get_hps(sweep):
 
             # Model
             'perception_stack': CONFIG['parameters']['perception_stack'],
+            'layer_norm': CONFIG['parameters']['layer_norm'],
             'shared_value': CONFIG['parameters']['shared_value'],
 
             # Optimization
@@ -219,14 +222,15 @@ def get_hps(sweep):
             'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.001),
             'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'one_sided_pen': CONFIG['parameters'].get('one_sided_pen', True),
             'fake_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
                                               '"none"']),
             'real_ls_type': np.random.choice(['"random-uniform_0.7_1.2"',
                                               '"soft_labels_0.1"',
                                               '"none"']),
-            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
+            'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
 
             # KYE
             'kye_p': CONFIG['parameters'].get('kye_p', False),
@@ -234,6 +238,10 @@ def get_hps(sweep):
             'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
+            'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
+
+            # RND
+            'rnd_batch_norm': CONFIG['parameters'].get('rnd_batch_norm', False),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),
@@ -263,6 +271,7 @@ def get_hps(sweep):
 
             # Model
             'perception_stack': CONFIG['parameters']['perception_stack'],
+            'layer_norm': CONFIG['parameters']['layer_norm'],
             'shared_value': CONFIG['parameters']['shared_value'],
 
             # Optimization
@@ -290,10 +299,11 @@ def get_hps(sweep):
             'd_ent_reg_scale': CONFIG['parameters'].get('d_ent_reg_scale', 0.001),
             'spectral_norm': CONFIG['parameters'].get('spectral_norm', True),
             'grad_pen': CONFIG['parameters'].get('grad_pen', True),
+            'one_sided_pen': CONFIG['parameters'].get('one_sided_pen', True),
             'fake_ls_type': CONFIG['parameters'].get('fake_ls_type', 'none'),
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
-            'syn_rew_scale': CONFIG['parameters'].get('syn_rew_scale', 1.0),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
+            'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
 
             # KYE
             'kye_p': CONFIG['parameters'].get('kye_p', False),
@@ -301,6 +311,10 @@ def get_hps(sweep):
             'kye_d': CONFIG['parameters'].get('kye_d', False),
             'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
+            'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
+
+            # RND
+            'rnd_batch_norm': CONFIG['parameters'].get('rnd_batch_norm', False),
 
             # PU
             'use_purl': CONFIG['parameters'].get('use_purl', False),

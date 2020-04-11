@@ -34,7 +34,7 @@ class GAILAgent(object):
         self.expert_dataset = expert_dataset
         assert self.hps.clip_norm >= 0
         if self.hps.clip_norm <= 0:
-            logger.info("[WARN] clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
+            logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
         # Parse the label smoothing types
         self.apply_ls_fake = self.parse_label_smoothing_type(self.hps.fake_ls_type)
@@ -79,6 +79,20 @@ class GAILAgent(object):
         if not self.hps.shared_value:
             log_module_info(logger, 'value', self.value)
         log_module_info(logger, 'discriminator', self.discriminator)
+
+        # FIXME
+        from agents.rnd import RandomNetworkDistillation
+        # Create nets for random network distillation
+        self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.expert_dataset)
+        # Train the predictor network on expert dataset
+        logger.info(">>>> RND training: BEG")
+        epochs = 500  # XXX
+        for epoch in range(epochs):
+            metrics = self.rnd.train()
+            logger.info("epoch: {}/{} | loss: {}".format(str(epoch).zfill(3),
+                                                         epochs,
+                                                         metrics['loss']))
+        logger.info(">>>> RND training: END")
 
     def parse_label_smoothing_type(self, ls_type):
         """Parse the `label_smoothing_type` hyperparameter"""
@@ -143,7 +157,7 @@ class GAILAgent(object):
         for j, row in enumerate([x[i, :] for i in range(x.shape[0])]):
             if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
                                                   torch.Tensor([1.]).to(self.device)], dim=-1))):
-                # logger.info("[INFO] removing absorbing row (#{})".format(j))
+                # logger.info("removing absorbing row (#{})".format(j))
                 pass
             else:
                 non_absorbing_rows.append(j)
@@ -179,7 +193,7 @@ class GAILAgent(object):
         for _ in range(self.hps.optim_epochs_per_iter):
 
             for batch in dataloader:  # go through the whole p_rollout
-                logger.info("[INFO] updating policy")
+                logger.info("updating policy")
 
                 # Transfer to device
                 if self.hps.wrap_absorb:
@@ -259,50 +273,50 @@ class GAILAgent(object):
                         reduction='none',
                     )
 
-                    inputs = []
-                    for n, p in self.policy.perception_stack.encoder_1.named_parameters():
-                        if p.requires_grad:
-                            if len(p.shape) == 1:  # ignore the bias vectors
-                                continue
-                            inputs.append(p)
-                    grads_a_list = []
-                    grads_b_list = []
-                    for i in range(_state.size(0)):
-                        # Compute the gradients of the shared weights for the main task
-                        grads_a = autograd.grad(
-                            outputs=[_p_loss[i, ...]],
-                            inputs=[*inputs],
-                            only_inputs=True,
-                            grad_outputs=[torch.ones_like(_p_loss[i, ...])],
-                            retain_graph=True,
-                            create_graph=True,
-                            allow_unused=True,
-                        )
-                        # Compute the gradients of the shared weights for the auxiliary task
-                        grads_b = autograd.grad(
-                            outputs=[_aux_loss[i, ...]],
-                            inputs=[*inputs],
-                            only_inputs=True,
-                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
-                            retain_graph=True,
-                            create_graph=True,
-                            allow_unused=True,
-                        )
-                        grads_a = torch.cat(list(grads_a), dim=-1)
-                        grads_b = torch.cat(list(grads_b), dim=-1)
-                        grads_a_list.append(grads_a)
-                        grads_b_list.append(grads_b)
-                    grads_a = torch.stack(grads_a_list, dim=0)
-                    grads_b = torch.stack(grads_b_list, dim=0)
-                    cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
-                    cos_sims = cos_sims.detach()  # safety measure
-                    metrics['cos_sim'].append(cos_sims.mean())
+                    if self.hps.adaptive_aux_scaling:
+                        inputs = []
+                        for n, p in self.policy.perception_stack.fc_stack.named_parameters():
+                            if p.requires_grad:
+                                if len(p.shape) == 1:  # ignore the bias vectors
+                                    continue
+                                inputs.append(p)
+                        grads_a_list = []
+                        grads_b_list = []
+                        for i in range(_state.size(0)):
+                            # Compute the gradients of the shared weights for the main task
+                            grads_a = autograd.grad(
+                                outputs=[_p_loss[i, ...]],
+                                inputs=[*inputs],
+                                only_inputs=True,
+                                grad_outputs=[torch.ones_like(_p_loss[i, ...])],
+                                retain_graph=True,
+                                create_graph=True,
+                                allow_unused=True,
+                            )
+                            # Compute the gradients of the shared weights for the auxiliary task
+                            grads_b = autograd.grad(
+                                outputs=[_aux_loss[i, ...]],
+                                inputs=[*inputs],
+                                only_inputs=True,
+                                grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                                retain_graph=True,
+                                create_graph=True,
+                                allow_unused=True,
+                            )
+                            grads_a = torch.cat(list(grads_a), dim=-1)
+                            grads_b = torch.cat(list(grads_b), dim=-1)
+                            grads_a_list.append(grads_a)
+                            grads_b_list.append(grads_b)
+                        grads_a = torch.stack(grads_a_list, dim=0)
+                        grads_b = torch.stack(grads_b_list, dim=0)
+                        cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
+                        cos_sims = cos_sims.detach()  # safety measure
+                        metrics['cos_sim'].append(cos_sims.mean())
 
-                    # Assemble losses
+                        cos_sims = cos_sims.mean(dim=1)
+                        assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
+                        _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
 
-                    cos_sims = cos_sims.mean(dim=1)
-                    assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
-                    _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
                     _aux_loss *= self.hps.kye_p_scale
 
                     aux_loss = _aux_loss.mean()
@@ -324,7 +338,7 @@ class GAILAgent(object):
                             state_e = state_e[indices, :]
                             next_state_e = next_state_e[indices, :]
                             action_e = action_e[indices, :]
-                        aux_loss += F.smooth_l1_loss(
+                        aux_loss += self.hps.kye_p_scale * F.smooth_l1_loss(
                             input=self.policy.auxo(_state_e),
                             target=self.get_reward(state_e, action_e, next_state_e),
                         )
@@ -348,7 +362,7 @@ class GAILAgent(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics, self.scheduler.get_last_lr()
 
-    def update_discriminator(self, rollout, iters_so_far):
+    def update_discriminator(self, rollout):
         """Update the discriminator network"""
 
         # Container for all the metrics
@@ -370,7 +384,7 @@ class GAILAgent(object):
         )
 
         for e_batch in self.e_dataloader:
-            logger.info("[INFO] updating discriminator")
+            logger.info("updating discriminator")
 
             # Get a minibatch of policy data
             d_batch = next(iter(d_dataloader))
@@ -389,7 +403,8 @@ class GAILAgent(object):
             _state = torch.cat([p_input_a, e_input_a], dim=0)
             if self.hps.wrap_absorb:
                 _state = self.remove_absorbing(_state)[0][:, 0:-1]
-            self.discriminator.rms_obs.update(_state)
+            if self.hps.d_batch_norm:
+                self.discriminator.rms_obs.update(_state)
 
             # Compute scores
             p_scores = self.discriminator.D(p_input_a, p_input_b)
@@ -460,50 +475,50 @@ class GAILAgent(object):
                 )
                 _aux_loss = _aux_loss.mean(dim=-1, keepdim=True)
 
-                inputs = []
-                for n, p in self.discriminator.d_encoder.named_parameters():
-                    if p.requires_grad:
-                        if len(p.shape) == 1:  # ignore the bias vectors
-                            continue
-                        inputs.append(p)
-                grads_a_list = []
-                grads_b_list = []
-                for i in range(_p_input_a.size(0)):
-                    # Compute the gradients of the shared weights for the main task
-                    grads_a = autograd.grad(
-                        outputs=[_p_e_loss[i, ...]],  # without entropy loss
-                        inputs=[*inputs],
-                        only_inputs=True,
-                        grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
-                        retain_graph=True,
-                        create_graph=True,
-                        allow_unused=True,
-                    )
-                    # Compute the gradients of the shared weights for the auxiliary task
-                    grads_b = autograd.grad(
-                        outputs=[_aux_loss[i, ...]],
-                        inputs=[*inputs],
-                        only_inputs=True,
-                        grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
-                        retain_graph=True,
-                        create_graph=True,
-                        allow_unused=True,
-                    )
-                    grads_a = torch.cat(list(grads_a), dim=-1)
-                    grads_b = torch.cat(list(grads_b), dim=-1)
-                    grads_a_list.append(grads_a)
-                    grads_b_list.append(grads_b)
-                grads_a = torch.stack(grads_a_list, dim=0)
-                grads_b = torch.stack(grads_b_list, dim=0)
-                cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
-                cos_sims = cos_sims.detach()  # safety measure
-                metrics['cos_sim'].append(cos_sims.mean())
+                if self.hps.adaptive_aux_scaling:
+                    inputs = []
+                    for n, p in self.discriminator.fc_stack.named_parameters():
+                        if p.requires_grad:
+                            if len(p.shape) == 1:  # ignore the bias vectors
+                                continue
+                            inputs.append(p)
+                    grads_a_list = []
+                    grads_b_list = []
+                    for i in range(_p_input_a.size(0)):
+                        # Compute the gradients of the shared weights for the main task
+                        grads_a = autograd.grad(
+                            outputs=[_p_e_loss[i, ...]],  # without entropy loss
+                            inputs=[*inputs],
+                            only_inputs=True,
+                            grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
+                            retain_graph=True,
+                            create_graph=True,
+                            allow_unused=True,
+                        )
+                        # Compute the gradients of the shared weights for the auxiliary task
+                        grads_b = autograd.grad(
+                            outputs=[_aux_loss[i, ...]],
+                            inputs=[*inputs],
+                            only_inputs=True,
+                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
+                            retain_graph=True,
+                            create_graph=True,
+                            allow_unused=True,
+                        )
+                        grads_a = torch.cat(list(grads_a), dim=-1)
+                        grads_b = torch.cat(list(grads_b), dim=-1)
+                        grads_a_list.append(grads_a)
+                        grads_b_list.append(grads_b)
+                    grads_a = torch.stack(grads_a_list, dim=0)
+                    grads_b = torch.stack(grads_b_list, dim=0)
+                    cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
+                    cos_sims = cos_sims.detach()  # safety measure
+                    metrics['cos_sim'].append(cos_sims.mean())
 
-                # Assemble losses
+                    cos_sims = cos_sims.mean(dim=1)
+                    assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
+                    _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
 
-                cos_sims = cos_sims.mean(dim=1)
-                assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
-                _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
                 _aux_loss *= self.hps.kye_d_scale
 
                 aux_loss = _aux_loss.mean()
@@ -518,7 +533,7 @@ class GAILAgent(object):
                         e_input_b = e_input_b[e_indices, :]
                     else:
                         _e_input_a = e_input_a
-                    aux_loss += F.smooth_l1_loss(
+                    aux_loss += self.hps.kye_d_scale * F.smooth_l1_loss(
                         input=self.discriminator.auxo(e_input_a, e_input_b),
                         target=self.policy.sample(_e_input_a),
                     )
@@ -560,7 +575,13 @@ class GAILAgent(object):
         assert len(list(grads)) == 2, "length must be exactly 2"
         # Return the gradient penalty (try to induce 1-Lipschitzness)
         grads = torch.cat(list(grads), dim=-1)
-        _grad_pen = (grads.norm(2, dim=-1) - 1.).pow(2)
+        grads_norm = grads.norm(2, dim=-1)
+        if self.hps.one_sided_pen:
+            # Penalize the gradient for having a norm GREATER than 1
+            _grad_pen = torch.max(torch.zeros_like(grads_norm), grads_norm - 1.).pow(2)
+        else:
+            # Penalize the gradient for having a norm LOWER OR GREATER than 1
+            _grad_pen = (grads_norm - 1.).pow(2)
         grad_pen = _grad_pen.mean()
         return grad_pen
 
@@ -598,7 +619,33 @@ class GAILAgent(object):
             # Return the sum the two previous reward functions (as in AIRL, Fu et al. 2018)
             # Numerics: might be better might be way worse
             reward = non_satur_reward + minimax_reward
-        return self.hps.syn_rew_scale * reward
+
+        # Reward mods  # TODO
+
+        # print("reward: {}".format(reward))  # FIXME
+
+        # Expert density matching
+        rnd_loss = F.mse_loss(
+            self.rnd.pred_net(input_a, input_b),
+            self.rnd.targ_net(input_a, input_b),
+        ).detach().view(-1, 1)
+        rnd_scale = 250000.  # as in original implementation of RED: 250000.
+        rnd_reward = torch.exp(-rnd_scale * rnd_loss)
+
+        # print("rnd_reward: {}".format(rnd_reward))  # FIXME
+
+        # # Know your enemy
+        # kye_loss = F.smooth_l1_loss(
+        #     self.policy.auxo(input_a[..., 0:-1] if self.hps.wrap_absorb else input_a),
+        #     reward,
+        # ).detach().view(-1, 1)
+        # kye_scale = 25000.
+        # kye_reward = torch.exp(-kye_scale * kye_loss)
+
+        # Controlability
+        # TODO
+
+        return reward * rnd_reward
 
     def save(self, path, iters):
         SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])

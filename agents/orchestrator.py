@@ -395,10 +395,10 @@ def learn(args,
                            config=args.__dict__)
             except ConnectionRefusedError:
                 pause = 5
-                logger.info("[WARN] wandb co error. Retrying in {} secs.".format(pause))
+                logger.info("wandb co error. Retrying in {} secs.".format(pause))
                 time.sleep(pause)
                 continue
-            logger.info("[WARN] wandb co established!")
+            logger.info("wandb co established!")
             break
 
     # Create rollout generator for training the agent
@@ -462,17 +462,16 @@ def learn(args,
                     )
                     d['pol_losses'].append(metrics['p_loss'])
                     d['val_losses'].append(metrics['v_loss'])
-                    if agent.hps.kye_p:
+                    if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                         d['cos_sims_p'].append(metrics['cos_sim'])
 
             for _ in range(agent.hps.d_steps):
                 with timed('discriminator training'):
                     metrics = agent.update_discriminator(
                         rollout=rollout,
-                        iters_so_far=iters_so_far,
                     )
                     d['dis_losses'].append(metrics['d_loss'])
-                    if agent.hps.kye_d:
+                    if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
                         d['cos_sims_d'].append(metrics['cos_sim'])
 
         if eval_env is not None:
@@ -505,9 +504,9 @@ def learn(args,
                 logger.record_tabular('eval_len', np.mean(d['eval_len']))
                 logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
                 logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
-                if agent.hps.kye_p:
+                if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                     logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
-                if agent.hps.kye_d:
+                if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
                     logger.record_tabular('cos_sim_d', np.mean(d['cos_sims_d']))
                 logger.info("dumping stats in .csv file")
                 logger.dump_tabular()
@@ -541,10 +540,10 @@ def learn(args,
             if agent.hps.algo == 'gail':
                 wandb.log({'dis_loss': np.mean(d['dis_losses'])},
                           step=timesteps_so_far)
-                if agent.hps.kye_p:
+                if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                     wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
                               step=timesteps_so_far)
-                if agent.hps.kye_d:
+                if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
                     wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
                               step=timesteps_so_far)
 

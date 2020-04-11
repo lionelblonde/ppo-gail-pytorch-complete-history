@@ -26,6 +26,7 @@ parameters:
 
   # Model
   perception_stack: 'shallow_mlp'
+  layer_norm: false
   shared_value: false
 
   # Optimization
@@ -51,12 +52,13 @@ parameters:
   state_only: false
   minimax_only: true
   d_ent_reg_scale: 0.001
-  spectral_norm: true
+  spectral_norm: false
   grad_pen: false
+  one_sided_pen: false
   fake_ls_type: '"none"'
   real_ls_type: '"none"'
-  syn_rew_scale: 1.
   wrap_absorb: true
+  d_batch_norm: false
 
   # KYE
   kye_p: true
@@ -64,6 +66,10 @@ parameters:
   kye_d: false
   kye_d_scale: 1.
   kye_mixing: false
+  adaptive_aux_scaling: false
+
+  # RND
+  rnd_batch_norm: true
 
   # PU
   use_purl: false
