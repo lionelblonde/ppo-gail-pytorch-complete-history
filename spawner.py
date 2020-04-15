@@ -37,9 +37,9 @@ TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
 BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'layer_norm', 'shared_value',
              'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
-             'wrap_absorb', 'd_batch_norm',
+             'wrap_absorb', 'd_batch_norm', 'red_batch_norm',
              'kye_p', 'kye_d', 'kye_mixing', 'adaptive_aux_scaling',
-             'rnd_batch_norm',
+             'rnd_explo', 'rnd_batch_norm', 'kye_batch_norm', 'dyn_batch_norm',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
@@ -231,8 +231,8 @@ def get_hps(sweep):
                                               '"none"']),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
             'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
+            'red_batch_norm': CONFIG['parameters'].get('red_batch_norm', False),
 
-            # KYE
             'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
             'kye_d': CONFIG['parameters'].get('kye_d', False),
@@ -240,10 +240,25 @@ def get_hps(sweep):
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
-            # RND
-            'rnd_batch_norm': CONFIG['parameters'].get('rnd_batch_norm', False),
+            'reward_type': CONFIG['parameters']['reward_type'],
 
-            # PU
+            'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
+            'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
+            'proportion_of_exp_per_red_update': CONFIG['parameters'].get('proportion_of_exp_per_red_update', 1.),
+
+            'rnd_explo': CONFIG['parameters'].get('rnd_explo', False),
+            'rnd_batch_norm': CONFIG['parameters'].get('rnd_batch_norm', True),
+            'rnd_lr': CONFIG['parameters'].get('rnd_lr', 5e-4),
+            'proportion_of_exp_per_rnd_update': CONFIG['parameters'].get('proportion_of_exp_per_rnd_update', 1.),
+
+            'kye_batch_norm': CONFIG['parameters'].get('kye_batch_norm', True),
+            'kye_lr': CONFIG['parameters'].get('kye_lr', 5e-4),
+            'proportion_of_exp_per_kye_update': CONFIG['parameters'].get('proportion_of_exp_per_kye_update', 1.),
+
+            'dyn_batch_norm': CONFIG['parameters'].get('dyn_batch_norm', True),
+            'dyn_lr': CONFIG['parameters'].get('dyn_lr', 5e-4),
+            'proportion_of_exp_per_dyn_update': CONFIG['parameters'].get('proportion_of_exp_per_dyn_update', 1.),
+
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
         }
@@ -304,8 +319,8 @@ def get_hps(sweep):
             'real_ls_type': CONFIG['parameters'].get('real_ls_type', 'random-uniform_0.7_1.2'),
             'wrap_absorb': CONFIG['parameters'].get('wrap_absorb', False),
             'd_batch_norm': CONFIG['parameters'].get('d_batch_norm', False),
+            'red_batch_norm': CONFIG['parameters'].get('red_batch_norm', False),
 
-            # KYE
             'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': CONFIG['parameters'].get('kye_p_scale', 0.1),
             'kye_d': CONFIG['parameters'].get('kye_d', False),
@@ -313,10 +328,25 @@ def get_hps(sweep):
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
-            # RND
-            'rnd_batch_norm': CONFIG['parameters'].get('rnd_batch_norm', False),
+            'reward_type': CONFIG['parameters']['reward_type'],
 
-            # PU
+            'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
+            'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
+            'proportion_of_exp_per_red_update': CONFIG['parameters'].get('proportion_of_exp_per_red_update', 1.),
+
+            'rnd_explo': CONFIG['parameters'].get('rnd_explo', False),
+            'rnd_batch_norm': CONFIG['parameters'].get('rnd_batch_norm', True),
+            'rnd_lr': CONFIG['parameters'].get('rnd_lr', 5e-4),
+            'proportion_of_exp_per_rnd_update': CONFIG['parameters'].get('proportion_of_exp_per_rnd_update', 1.),
+
+            'kye_batch_norm': CONFIG['parameters'].get('kye_batch_norm', True),
+            'kye_lr': CONFIG['parameters'].get('kye_lr', 5e-4),
+            'proportion_of_exp_per_kye_update': CONFIG['parameters'].get('proportion_of_exp_per_kye_update', 1.),
+
+            'dyn_batch_norm': CONFIG['parameters'].get('dyn_batch_norm', True),
+            'dyn_lr': CONFIG['parameters'].get('dyn_lr', 5e-4),
+            'proportion_of_exp_per_dyn_update': CONFIG['parameters'].get('proportion_of_exp_per_dyn_update', 1.),
+
             'use_purl': CONFIG['parameters'].get('use_purl', False),
             'purl_eta': float(CONFIG['parameters'].get('purl_eta', 0.25)),
         }

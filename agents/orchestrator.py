@@ -163,7 +163,9 @@ def gail_rollout_generator(env, agent, rollout_len):
                 # Wrap with an absorbing state
                 _new_ob = np.append(np.zeros(agent.ob_shape), 1)
                 rollout['obs1'].append(_new_ob)
-                syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
+                syn_rew = agent.get_syn_rew(_ob[None], _ac[None], _new_ob[None])
+                if agent.hps.rnd_explo:
+                    syn_rew += agent.rnd.get_int_rew(_new_ob[None])
                 syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
                 rollout['syn_rews'].append(syn_rew)
                 # Add absorbing transition
@@ -181,7 +183,9 @@ def gail_rollout_generator(env, agent, rollout_len):
             else:
                 _new_ob = np.append(new_ob, 0)
                 rollout['obs1'].append(_new_ob)
-                syn_rew = agent.get_reward(_ob[None], _ac[None], _new_ob[None])
+                syn_rew = agent.get_syn_rew(_ob[None], _ac[None], _new_ob[None])
+                if agent.hps.rnd_explo:
+                    syn_rew += agent.rnd.get_int_rew(_new_ob[None])
                 syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
                 rollout['syn_rews'].append(syn_rew)
         else:
@@ -192,7 +196,9 @@ def gail_rollout_generator(env, agent, rollout_len):
             rollout['logps'].append(logp)
             rollout['env_rews'].append(env_rew)
             rollout['dones'].append(done)
-            syn_rew = agent.get_reward(ob[None], ac[None], new_ob[None])
+            syn_rew = agent.get_syn_rew(ob[None], ac[None], new_ob[None])
+            if agent.hps.rnd_explo:
+                syn_rew += agent.rnd.get_int_rew(_new_ob[None])
             syn_rew = np.asscalar(syn_rew.detach().cpu().numpy().flatten())
             rollout['syn_rews'].append(syn_rew)
 

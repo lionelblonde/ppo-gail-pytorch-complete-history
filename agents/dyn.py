@@ -16,33 +16,33 @@ class PredNet(nn.Module):
     def __init__(self, env, hps):
         super(PredNet, self).__init__()
         ob_dim = env.observation_space.shape[0]
+        ac_dim = env.action_space.shape[0]
         if hps.wrap_absorb:
             ob_dim += 1
+            ac_dim += 1
         self.hps = hps
         self.leak = 0.1
-        if self.hps.rnd_batch_norm:
+        if self.hps.dyn_batch_norm:
             # Define observation whitening
             self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=False)
         # Assemble the layers
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 100)),
+                ('fc', nn.Linear(ob_dim + ac_dim, 100)),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
             ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(100, 100)),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
-            ('fc_block_3', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(100, 100)),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
-            ]))),
         ]))
+        self.head = nn.Linear(100, ob_dim)
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
+        self.head.apply(init(weight_scale=0.01))
 
-    def forward(self, obs):
-        if self.hps.rnd_batch_norm:
+    def forward(self, obs, acs):
+        if self.hps.dyn_batch_norm:
             # Apply normalization
             if self.hps.wrap_absorb:
                 obs_ = obs.clone()[:, 0:-1]
@@ -52,43 +52,14 @@ class PredNet(nn.Module):
                 obs = torch.clamp(self.rms_obs.standardize(obs), -5., 5.)
         else:
             obs = torch.clamp(obs, -5., 5.)
-        x = self.fc_stack(obs)
+        # Concatenate
+        x = torch.cat([obs, acs], dim=-1)
+        x = self.fc_stack(x)
+        x = self.head(x)
         return x
 
 
-class TargNet(PredNet):
-
-    def __init__(self, env, hps):
-        super(TargNet, self).__init__(env, hps)
-        ob_dim = env.observation_space.shape[0]
-        if hps.wrap_absorb:
-            ob_dim += 1
-        self.hps = hps
-        self.leak = 0.1
-        if self.hps.rnd_batch_norm:
-            # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=False)
-        # Assemble the layers
-        self.fc_stack = nn.Sequential(OrderedDict([
-            ('fc_block_1', nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(ob_dim, 100)),
-                ('nl', nn.LeakyReLU(negative_slope=self.leak)),
-            ]))),
-        ]))
-        # Perform initialization
-        self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
-
-        # Prevent the weights from ever being updated
-        for param in self.fc_stack.parameters():
-            param.requires_grad = False
-
-
-class RandomNetworkDistillation(object):
-
-    """Difference compared to original RND:
-    we add the intrinsic reward to the main reward and learn a single advantage,
-    as opposed to learning one advantage for each, since we do not play with different horizons.
-    """
+class Forward(object):
 
     def __init__(self, env, device, hps):
         self.env = env
@@ -97,54 +68,73 @@ class RandomNetworkDistillation(object):
 
         # Create nets
         self.pred_net = PredNet(self.env, self.hps).to(self.device)
-        self.targ_net = TargNet(self.env, self.hps).to(self.device)  # fixed, not trained
 
         # Create optimizer
-        self.optimizer = torch.optim.Adam(self.pred_net.parameters(), lr=self.hps.rnd_lr)
+        self.optimizer = torch.optim.Adam(self.pred_net.parameters(), lr=self.hps.dyn_lr)
 
         # Define reward normalizer
-        self.rms_int_rews = RunMoms(shape=(1,), use_mpi=False)
+        self.rms_pred_losses = RunMoms(shape=(1,), use_mpi=False)
 
-        log_module_info(logger, 'RND Pred Network', self.pred_net)
-        log_module_info(logger, 'RND Targ Network', self.targ_net)
+        log_module_info(logger, 'KYE Pred Network', self.pred_net)
+
+    def remove_absorbing(self, x):
+        non_absorbing_rows = []
+        for j, row in enumerate([x[i, :] for i in range(x.shape[0])]):
+            if torch.all(torch.eq(row, torch.cat([torch.zeros_like(row[0:-1]),
+                                                  torch.Tensor([1.]).to(self.device)], dim=-1))):
+                # logger.info("removing absorbing row (#{})".format(j))
+                pass
+            else:
+                non_absorbing_rows.append(j)
+        return x[non_absorbing_rows, :], non_absorbing_rows
 
     def update(self, dataloader):
-        """Update the RND predictor network"""
+        """Update the opponent predictor network"""
 
         # Container for all the metrics
         metrics = defaultdict(list)
 
         for batch in dataloader:
-            logger.info("updating rnd predictor")
+            logger.info("updating dyn predictor")
 
             # Transfer to device
-            state = batch['obs0'].to(self.device)
-
-            if self.hps.rnd_batch_norm:
+            if self.hps.wrap_absorb:
                 _state = batch['obs0_orig'].to(self.device)
+            else:
+                _state = batch['obs0'].to(self.device)
+            state = batch['obs0'].to(self.device)
+            next_state = batch['obs1'].to(self.device)
+            action = batch['acs'].to(self.device)
+            if self.hps.wrap_absorb:
+                _, indices = self.remove_absorbing(state)
+                _state = _state[indices, :]
+                state = state[indices, :]
+                next_state = next_state[indices, :]
+                action = action[indices, :]
+
+            if self.hps.dyn_batch_norm:
                 # Update running moments for observations
                 self.pred_net.rms_obs.update(_state)
-                self.targ_net.rms_obs.update(_state)
 
             # Compute loss
             _loss = F.mse_loss(
-                self.pred_net(state),
-                self.targ_net(state),
+                self.pred_net(state, action),
+                next_state,
                 reduction='none',
             )
             loss = _loss.mean(dim=-1)
             mask = loss.clone().detach().data.uniform_().to(self.device)
-            mask = (mask < self.hps.proportion_of_exp_per_rnd_update).float()
+            mask = (mask < self.hps.proportion_of_exp_per_dyn_update).float()
             loss = (mask * loss).sum() / torch.max(torch.Tensor([1.]), mask.sum())
             metrics['loss'].append(loss)
 
-            # Update running moments for intrinsic rewards
-            int_rews = F.mse_loss(
-                self.pred_net(state),
-                self.targ_net(state),
+            # Update running moments
+            pred_losses = F.mse_loss(
+                self.pred_net(state, action),
+                next_state,
                 reduction='none',
             ).mean(dim=-1, keepdim=True).detach()
-            self.rms_int_rews.update(int_rews)
+            self.rms_pred_losses.update(pred_losses)
 
             # Update parameters
             self.optimizer.zero_grad()
@@ -154,17 +144,14 @@ class RandomNetworkDistillation(object):
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics
 
-    def get_int_rew(self, next_state):  # name purposefully explicit
-        if not isinstance(next_state, torch.Tensor):
-            next_state = torch.Tensor(next_state)
-        # Transfer to cpu
-        next_state = next_state.cpu()
+    def get_int_rew(self, state, action, next_state):
         # Compute intrinsic reward
-        int_rew = F.mse_loss(
-            self.pred_net(next_state),
-            self.targ_net(next_state),
+        pred_losses = F.mse_loss(
+            self.pred_net(state, action),
+            next_state,
             reduction='none',
         ).mean(dim=-1, keepdim=True).detach()
         # Normalize intrinsic reward
-        int_rew = self.rms_int_rews.divide_by_std(int_rew)
-        return int_rew
+        pred_losses = self.rms_pred_losses.divide_by_std(pred_losses)
+        int_rews = torch.exp(-pred_losses)
+        return int_rews

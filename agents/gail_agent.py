@@ -15,6 +15,11 @@ from helpers.distributed_util import average_gradients, sync_with_root
 from agents.nets import GaussPolicy, Value, Discriminator
 from agents.gae import gae
 
+from agents.red import RandomExpertDistillation
+from agents.rnd import RandomNetworkDistillation
+from agents.kye import KnowYourEnemy
+from agents.dyn import Forward
+
 
 class GAILAgent(object):
 
@@ -80,19 +85,43 @@ class GAILAgent(object):
             log_module_info(logger, 'value', self.value)
         log_module_info(logger, 'discriminator', self.discriminator)
 
-        # FIXME
-        from agents.rnd import RandomNetworkDistillation
-        # Create nets for random network distillation
-        self.rnd = RandomNetworkDistillation(self.env, self.device, self.hps, self.expert_dataset)
-        # Train the predictor network on expert dataset
-        logger.info(">>>> RND training: BEG")
-        epochs = 500  # XXX
-        for epoch in range(epochs):
-            metrics = self.rnd.train()
-            logger.info("epoch: {}/{} | loss: {}".format(str(epoch).zfill(3),
-                                                         epochs,
-                                                         metrics['loss']))
-        logger.info(">>>> RND training: END")
+        if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
+            # Create nets
+            self.red = RandomExpertDistillation(
+                self.env,
+                self.device,
+                self.hps,
+                self.expert_dataset,
+            )
+            # Train the predictor network on expert dataset
+            logger.info(">>>> RED training: BEG")
+            for epoch in range(int(self.hps.red_epochs)):
+                metrics, _ = self.red.train()
+                logger.info("epoch: {}/{} | loss: {}".format(str(epoch).zfill(3),
+                                                             self.hps.red_epochs,
+                                                             metrics['loss']))
+            logger.info(">>>> RED training: END")
+
+        if self.hps.rnd_explo:
+            self.rnd = RandomNetworkDistillation(
+                self.env,
+                self.device,
+                self.hps,
+            )
+
+        if self.hps.reward_type == 'gail_kye_mod':
+            self.kye = KnowYourEnemy(
+                self.env,
+                self.device,
+                self.hps,
+            )
+
+        if self.hps.reward_type == 'gail_dyn_mod':
+            self.dyn = Forward(
+                self.env,
+                self.device,
+                self.hps,
+            )
 
     def parse_label_smoothing_type(self, ls_type):
         """Parse the `label_smoothing_type` hyperparameter"""
@@ -192,7 +221,7 @@ class GAILAgent(object):
 
         for _ in range(self.hps.optim_epochs_per_iter):
 
-            for batch in dataloader:  # go through the whole p_rollout
+            for batch in dataloader:
                 logger.info("updating policy")
 
                 # Transfer to device
@@ -252,8 +281,6 @@ class GAILAgent(object):
 
                 if self.hps.kye_p:
 
-                    # Sub-optimal potential re-definitions here
-                    # but easier to debut and with little over-head
                     if self.hps.wrap_absorb:
                         _state = batch['obs0_orig'].to(self.device)
                     else:
@@ -267,9 +294,16 @@ class GAILAgent(object):
                         state = state[indices, :]
                         next_state = next_state[indices, :]
                         action = action[indices, :]
+
+                    input_a = state
+                    if self.hps.state_only:
+                        input_b = next_state
+                    else:
+                        input_b = action
+
                     _aux_loss = F.smooth_l1_loss(
-                        input=self.policy.auxo(_state),
-                        target=self.get_reward(state, action, next_state),
+                        input=(self.policy.auxo(_state)),
+                        target=self.discriminator.D(input_a, input_b),
                         reduction='none',
                     )
 
@@ -338,9 +372,16 @@ class GAILAgent(object):
                             state_e = state_e[indices, :]
                             next_state_e = next_state_e[indices, :]
                             action_e = action_e[indices, :]
+
+                        input_a_e = state_e
+                        if self.hps.state_only:
+                            input_b_e = next_state_e
+                        else:
+                            input_b_e = action_e
+
                         aux_loss += self.hps.kye_p_scale * F.smooth_l1_loss(
                             input=self.policy.auxo(_state_e),
-                            target=self.get_reward(state_e, action_e, next_state_e),
+                            target=self.discriminator.D(input_a_e, input_b_e),
                         )
 
                     p_loss += aux_loss
@@ -358,6 +399,16 @@ class GAILAgent(object):
                     v_loss.backward()
                     average_gradients(self.value, self.device)
                     self.v_optimizer.step()
+
+            if self.hps.rnd_explo:
+                # In accordance with RND's pseudo-code, train as many times as the policy
+                self.rnd.update(dataloader)  # ignore returned var
+
+            if self.hps.reward_type == 'gail_kye_mod':
+                self.kye.update(dataloader, self.discriminator.D)  # ignore returned var
+
+            if self.hps.reward_type == 'gail_dyn_mod':
+                self.dyn.update(dataloader)  # ignore returned var
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics, self.scheduler.get_last_lr()
@@ -585,7 +636,7 @@ class GAILAgent(object):
         grad_pen = _grad_pen.mean()
         return grad_pen
 
-    def get_reward(self, state, action, next_state):
+    def get_syn_rew(self, state, action, next_state):
         # Define the discriminator inputs
         input_a = state
         if self.hps.state_only:
@@ -620,32 +671,38 @@ class GAILAgent(object):
             # Numerics: might be better might be way worse
             reward = non_satur_reward + minimax_reward
 
-        # Reward mods  # TODO
+        if self.hps.reward_type == 'gail':
+            return reward
 
-        # print("reward: {}".format(reward))  # FIXME
+        if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
+            # Compute reward
+            red_reward = self.red.get_syn_rew(input_a, input_b)
+            # Assemble and return reward
+            if self.hps.reward_type == 'red':
+                return red_reward
+            elif self.hps.reward_type == 'gail_red_mod':
+                assert red_reward.shape == reward.shape
+                return red_reward * reward
 
-        # Expert density matching
-        rnd_loss = F.mse_loss(
-            self.rnd.pred_net(input_a, input_b),
-            self.rnd.targ_net(input_a, input_b),
-        ).detach().view(-1, 1)
-        rnd_scale = 250000.  # as in original implementation of RED: 250000.
-        rnd_reward = torch.exp(-rnd_scale * rnd_loss)
+        if self.hps.reward_type == 'gail_kye_mod':
+            # Know your enemy
+            kye_reward = self.kye.get_int_rew(input_a, input_b, self.discriminator.D)
+            return kye_reward * reward
 
-        # print("rnd_reward: {}".format(rnd_reward))  # FIXME
-
-        # # Know your enemy
-        # kye_loss = F.smooth_l1_loss(
-        #     self.policy.auxo(input_a[..., 0:-1] if self.hps.wrap_absorb else input_a),
-        #     reward,
-        # ).detach().view(-1, 1)
-        # kye_scale = 25000.
-        # kye_reward = torch.exp(-kye_scale * kye_loss)
-
-        # Controlability
-        # TODO
-
-        return reward * rnd_reward
+        if self.hps.reward_type == 'gail_dyn_mod':
+            # Controlability
+            if self.hps.state_only:
+                input_c = action
+            else:
+                input_c = next_state
+            if not isinstance(input_c, torch.Tensor):
+                input_c = torch.Tensor(input_c)
+            input_a = input_a.cpu()
+            if self.hps.state_only:
+                dyn_reward = self.dyn.get_int_rew(input_a, input_c, input_b)
+            else:
+                dyn_reward = self.dyn.get_int_rew(input_a, input_b, input_c)
+            return dyn_reward * reward
 
     def save(self, path, iters):
         SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])
