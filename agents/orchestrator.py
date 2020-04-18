@@ -59,7 +59,11 @@ def ppo_rollout_generator(env, agent, rollout_len):
             rollout.clear()
 
         # Interact with env(s)
-        new_ob, env_rew, done, _ = env.step(ac)
+        new_ob, env_rew, done, info = env.step(ac)
+
+        if 'cost' in info:
+            # Substract the cost
+            env_rew -= 0.1 * info['cost']
 
         # Populate collections
         rollout['obs0'].append(ob)
@@ -72,7 +76,10 @@ def ppo_rollout_generator(env, agent, rollout_len):
 
         # Update current episode statistics
         cur_ep_len += 1
-        assert env._elapsed_steps == cur_ep_len  # sanity check
+        elapsed_steps = (env._elapsed_steps
+                         if hasattr(env, '_elapsed_steps')
+                         else env.steps)  # for safety gym
+        assert elapsed_steps == cur_ep_len  # sanity check
         cur_ep_env_ret += env_rew
 
         # Set current state with the next
@@ -146,6 +153,13 @@ def gail_rollout_generator(env, agent, rollout_len):
         # Interact with env(s)
         new_ob, env_rew, done, _ = env.step(ac)
 
+        elapsed_steps = (env._elapsed_steps
+                         if hasattr(env, '_elapsed_steps')
+                         else env.steps)  # for safety gym
+        max_episode_steps = (env._max_episode_steps
+                             if hasattr(env, '_elapsed_steps')
+                             else env.num_steps)  # for safety gym
+
         # Populate collections
         if agent.hps.wrap_absorb:
             rollout['obs0_orig'].append(ob)
@@ -159,7 +173,7 @@ def gail_rollout_generator(env, agent, rollout_len):
             rollout['logps'].append(logp)
             rollout['env_rews'].append(env_rew)
             rollout['dones'].append(done)
-            if done and not env._elapsed_steps == env._max_episode_steps:
+            if done and not elapsed_steps == max_episode_steps:
                 # Wrap with an absorbing state
                 _new_ob = np.append(np.zeros(agent.ob_shape), 1)
                 rollout['obs1'].append(_new_ob)
@@ -204,7 +218,7 @@ def gail_rollout_generator(env, agent, rollout_len):
 
         # Update current episode statistics
         cur_ep_len += 1
-        assert env._elapsed_steps == cur_ep_len  # sanity check
+        assert elapsed_steps == cur_ep_len  # sanity check
         cur_ep_env_ret += env_rew
         cur_ep_syn_ret += syn_rew
 
@@ -247,6 +261,18 @@ def ep_generator(env, agent, render, record):
         if benchmark == 'atari':
             def _render():
                 return bgr_to_rgb(env.render(**kwargs))
+        elif benchmark == 'safety':
+            def _render():
+                x = deepcopy(env.render(mode='rgb_array',
+                                        camera_id=1,
+                                        width=500,
+                                        height=500))
+                _b = np.expand_dims(x[..., 0], -1)
+                _g = np.expand_dims(x[..., 1], -1)
+                _r = np.expand_dims(x[..., 2], -1)
+                rgb_x = np.concatenate([_r, _g, _b], axis=-1)
+                del x, _b, _g, _r
+                return rgb_x
         elif benchmark in ['mujoco', 'pycolab']:
             def _render():
                 return env.render(**kwargs)

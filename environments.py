@@ -14,6 +14,42 @@ MUJOCO_ROBOTS = [
 MUJOCO_ENVS = ["{}-v2".format(name) for name in MUJOCO_ROBOTS]
 MUJOCO_ENVS.extend(["{}-v3".format(name) for name in MUJOCO_ROBOTS])
 
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Safety Gym environments.
+
+SAFETY_ENVS = [
+    'Safexp-PointGoal0',
+    'Safexp-PointGoal1',
+    'Safexp-PointGoal2',
+    'Safexp-CarGoal0',
+    'Safexp-CarGoal1',
+    'Safexp-CarGoal2',
+    'Safexp-DoggoGoal0',
+    'Safexp-DoggoGoal1',
+    'Safexp-DoggoGoal2',
+
+    'Safexp-PointButton0',
+    'Safexp-PointButton1',
+    'Safexp-PointButton2',
+    'Safexp-CarButton0',
+    'Safexp-CarButton1',
+    'Safexp-CarButton2',
+    'Safexp-DoggoButton0',
+    'Safexp-DoggoButton1',
+    'Safexp-DoggoButton2',
+
+    'Safexp-PointPush0',
+    'Safexp-PointPush1',
+    'Safexp-PointPush2',
+    'Safexp-CarPush0',
+    'Safexp-CarPush1',
+    'Safexp-CarPush2',
+    'Safexp-DoggoPush0',
+    'Safexp-DoggoPush1',
+    'Safexp-DoggoPush2',
+]
+
+SAFETY_ENVS = ["{}-v0".format(name) for name in SAFETY_ENVS]
+
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Atari games.
 
 ATARI_GAMES = list(map(lambda name: ''.join([g.capitalize() for g in name.split('_')]), [
@@ -43,6 +79,7 @@ PYCOLAB_ENVS = ["{}-v0".format(name) for name in PYCOLAB_ENVS]
 
 BENCHMARKS = {
     'mujoco': MUJOCO_ENVS,
+    'safety': SAFETY_ENVS,
     'atari': ATARI_ENVS,
     'pycolab': PYCOLAB_ENVS,
 }

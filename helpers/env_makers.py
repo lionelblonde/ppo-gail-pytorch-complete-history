@@ -1,4 +1,6 @@
 import gym
+import safety_gym  # noqa
+
 from helpers.atari_wrappers import wrap_atari
 
 from helpers.pycolab_envs import make_pycolab
@@ -24,7 +26,7 @@ def make_env(env_id, seed):
         return env
     env = gym.make(env_id)
     env.seed(seed)
-    if benchmark == 'mujoco':
+    if benchmark in ['mujoco', 'safety']:
         pass
     elif benchmark == 'atari':
         env = wrap_atari(env)

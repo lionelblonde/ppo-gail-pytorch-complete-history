@@ -99,6 +99,78 @@ if BENCH == 'mujoco':
             'Humanoid': '0-12:00:00',
         }
 
+elif BENCH == 'safety':
+    TOC = {
+        'debug_nohazards': ['Safexp-PointGoal0-v0'],
+        'debug_hazards': ['Safexp-PointGoal1-v0'],
+        'point_nohazards': ['Safexp-PointGoal0-v0',
+                            'Safexp-PointPush0-v0'],
+        'point_hazards': ['Safexp-PointGoal1-v0',
+                          'Safexp-PointGoal2-v0',
+                          'Safexp-PointPush1-v0',
+                          'Safexp-PointPush2-v0'],
+        'car_nohazards': ['Safexp-CarGoal0-v0',
+                          'Safexp-CarPush0-v0'],
+        'car_hazards': ['Safexp-CarGoal1-v0',
+                        'Safexp-CarGoal2-v0',
+                        'Safexp-CarPush1-v0',
+                        'Safexp-CarPush2-v0'],
+        'doggo_nohazards': ['Safexp-DoggoGoal0-v0',
+                            'Safexp-DoggoPush0-v0'],
+        'doggo_hazards': ['Safexp-DoggoGoal1-v0',
+                          'Safexp-DoggoGoal2-v0',
+                          'Safexp-DoggoPush1-v0',
+                          'Safexp-DoggoPush2-v0'],
+    }
+    ENVS = TOC[args.envset]
+
+    if CLUSTER == 'baobab':
+        # Define per-environement partitions map
+        PEP = {
+            'Safexp-PointGoal1': 'shared-EL7,mono-shared-EL7',
+            'Safexp-PointGoal2': 'shared-EL7,mono-shared-EL7',
+            'Safexp-PointPush1': 'shared-EL7,mono-shared-EL7',
+            'Safexp-PointPush2': 'shared-EL7,mono-shared-EL7',
+            'Safexp-CarGoal1': 'shared-EL7,mono-shared-EL7',
+            'Safexp-CarGoal2': 'shared-EL7,mono-shared-EL7',
+            'Safexp-CarPush1': 'shared-EL7,mono-shared-EL7',
+            'Safexp-CarPush2': 'shared-EL7,mono-shared-EL7',
+            'Safexp-DoggoGoal1': 'shared-EL7,mono-shared-EL7',
+            'Safexp-DoggoGoal2': 'shared-EL7,mono-shared-EL7',
+            'Safexp-DoggoPush1': 'shared-EL7,mono-shared-EL7',
+            'Safexp-DoggoPush2': 'shared-EL7,mono-shared-EL7',
+        }
+        # Define per-environment ntasks map
+        PEC = {
+            'Safexp-PointGoal1': '8',
+            'Safexp-PointGoal2': '8',
+            'Safexp-PointPush1': '8',
+            'Safexp-PointPush2': '8',
+            'Safexp-CarGoal1': '12',
+            'Safexp-CarGoal2': '12',
+            'Safexp-CarPush1': '12',
+            'Safexp-CarPush2': '12',
+            'Safexp-DoggoGoal1': '16',
+            'Safexp-DoggoGoal2': '16',
+            'Safexp-DoggoPush1': '16',
+            'Safexp-DoggoPush2': '16',
+        }
+        # Define per-environment timeouts map
+        PET = {
+            'Safexp-PointGoal1': '0-06:00:00',
+            'Safexp-PointGoal2': '0-06:00:00',
+            'Safexp-PointPush1': '0-06:00:00',
+            'Safexp-PointPush2': '0-06:00:00',
+            'Safexp-CarGoal1': '0-06:00:00',
+            'Safexp-CarGoal2': '0-06:00:00',
+            'Safexp-CarPush1': '0-06:00:00',
+            'Safexp-CarPush2': '0-06:00:00',
+            'Safexp-DoggoGoal1': '0-06:00:00',
+            'Safexp-DoggoGoal2': '0-06:00:00',
+            'Safexp-DoggoPush1': '0-06:00:00',
+            'Safexp-DoggoPush2': '0-06:00:00',
+        }
+
 elif BENCH == 'atari':
     map_ = {
         'easy': ['Pong'],
