@@ -70,7 +70,6 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
     boolean_flag(parser, 'wrap_absorb', default=False)
     boolean_flag(parser, 'd_batch_norm', default=False)
-    boolean_flag(parser, 'red_batch_norm', default=True)
 
     boolean_flag(parser, 'kye_p', default=False)
     parser.add_argument('--kye_p_scale', type=float, default=10.)
@@ -83,6 +82,7 @@ def argparser(description="PPO/GAIL Experiment"):
                         choices=['gail', 'red', 'gail_red_mod', 'gail_kye_mod', 'gail_dyn_mod'])
 
     parser.add_argument('--red_epochs', type=int, default=200)
+    boolean_flag(parser, 'red_batch_norm', default=True)
     parser.add_argument('--red_lr', type=float, default=5e-4)
     parser.add_argument('--proportion_of_exp_per_red_update', type=float, default=1.)
 

@@ -89,7 +89,7 @@ class Forward(object):
         return x[non_absorbing_rows, :], non_absorbing_rows
 
     def update(self, dataloader):
-        """Update the opponent predictor network"""
+        """Update the dynamics predictor network"""
 
         # Container for all the metrics
         metrics = defaultdict(list)

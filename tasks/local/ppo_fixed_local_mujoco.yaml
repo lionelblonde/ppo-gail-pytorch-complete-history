@@ -20,7 +20,7 @@ parameters:
   benchmark: 'mujoco'
 
   # Training
-  save_frequency: 1000
+  save_frequency: 100
   num_timesteps: 1e7
   eval_steps_per_iter: 10
   eval_frequency: 10
@@ -41,6 +41,6 @@ parameters:
   batch_size: 128
   gamma: 0.99
   gae_lambda: 0.95
-  eps: 0.2
+  eps: 0.15
   baseline_scale: 0.1
   p_ent_reg_scale: 0.

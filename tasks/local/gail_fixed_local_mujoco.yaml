@@ -27,7 +27,7 @@ parameters:
 
   # Model
   perception_stack: 'shallow_mlp'
-  layer_norm: false
+  layer_norm: true
   shared_value: false
 
   # Optimization
@@ -60,7 +60,6 @@ parameters:
   real_ls_type: '"none"'
   wrap_absorb: true
   d_batch_norm: false
-  red_batch_norm: true
 
   kye_p: false
   kye_p_scale: 1.
@@ -72,19 +71,20 @@ parameters:
   reward_type: 'gail'
 
   red_epochs: 200
+  red_batch_norm: true
   red_lr: 5.0e-4
   proportion_of_exp_per_red_update: 1.
 
   rnd_explo: false
-  rnd_batch_norm: True
+  rnd_batch_norm: true
   rnd_lr: 5.0e-4
   proportion_of_exp_per_rnd_update: 1.
 
-  kye_batch_norm: True
+  kye_batch_norm: true
   kye_lr: 5.0e-4
   proportion_of_exp_per_kye_update: 1.
 
-  dyn_batch_norm: True
+  dyn_batch_norm: true
   dyn_lr: 5.0e-4
   proportion_of_exp_per_dyn_update: 1.
 

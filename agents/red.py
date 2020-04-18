@@ -211,6 +211,13 @@ class RandomExpertDistillation(object):
         return metrics, e_pde
 
     def get_syn_rew(self, input_a, input_b):
+        assert sum([isinstance(x, torch.Tensor) for x in [input_a, input_b]]) in [0, 2]
+        if not isinstance(input_a, torch.Tensor):  # then the other is not neither
+            input_a = torch.Tensor(input_a)
+            input_b = torch.Tensor(input_b)
+        # Transfer to cpu
+        input_a = input_a.cpu()
+        input_b = input_b.cpu()
         # Compute synthetic reward
         pred_losses = F.mse_loss(
             self.pred_net(input_a, input_b),

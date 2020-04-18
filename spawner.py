@@ -37,9 +37,9 @@ TYPE = 'sweep' if args.sweep else 'fixed'
 # Write out the boolean arguments (using the 'boolean_flag' function)
 BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'layer_norm', 'shared_value',
              'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
-             'wrap_absorb', 'd_batch_norm', 'red_batch_norm',
+             'wrap_absorb', 'd_batch_norm',
              'kye_p', 'kye_d', 'kye_mixing', 'adaptive_aux_scaling',
-             'rnd_explo', 'rnd_batch_norm', 'kye_batch_norm', 'dyn_batch_norm',
+             'red_batch_norm', 'rnd_explo', 'rnd_batch_norm', 'kye_batch_norm', 'dyn_batch_norm',
              'use_purl']
 
 # Create the list of environments from the indicated benchmark
@@ -85,7 +85,7 @@ if BENCH == 'mujoco':
             'Walker2d': '16',
             'HalfCheetah': '16',
             'Ant': '16',
-            'Humanoid': '48',
+            'Humanoid': '32',
         }
         # Define per-environment timeouts map
         PET = {
@@ -240,7 +240,7 @@ def get_hps(sweep):
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
-            'reward_type': CONFIG['parameters']['reward_type'],
+            'reward_type': CONFIG['parameters'].get('reward_type', 'gail'),
 
             'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
             'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
@@ -328,7 +328,7 @@ def get_hps(sweep):
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
-            'reward_type': CONFIG['parameters']['reward_type'],
+            'reward_type': CONFIG['parameters'].get('reward_type', 'gail'),
 
             'red_epochs': CONFIG['parameters'].get('red_epochs', 200),
             'red_lr': CONFIG['parameters'].get('red_lr', 5e-4),
@@ -467,7 +467,7 @@ def run(args):
     # Create the job maps
     names = ["{}.{}".format(TYPE, hpmap['uuid']) for i, hpmap in enumerate(hpmaps)]
     # Create environment keys for envionment-specific hyperparameter selection
-    envkeys = [hpmap['env_id'].split('-')[0] for hpmap in hpmaps]
+    envkeys = [hpmap['env_id'].split('-v')[0] for hpmap in hpmaps]
 
     # Finally get all the required job strings
     jobs = [create_job_str(name, command, envkey)

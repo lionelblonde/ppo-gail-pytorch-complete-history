@@ -11,7 +11,7 @@ from torch.autograd import Variable
 from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
-from helpers.distributed_util import average_gradients, sync_with_root
+from helpers.distributed_util import average_gradients, sync_with_root, mpi_mean_like
 from agents.nets import GaussPolicy, Value, Discriminator
 from agents.gae import gae
 
@@ -250,8 +250,7 @@ class GAILAgent(object):
                                                             1.0 + self.hps.eps)
                 _clip_loss = torch.max(surrogate_loss_a, surrogate_loss_b)
                 clip_loss = _clip_loss.mean()
-                kl_approx = 0.5 * (logp - logp_old).pow(2).mean()
-                kl_max = 0.5 * (logp - logp_old).pow(2).max()
+                kl_approx = (logp - logp_old).mean()
                 clip_frac = (ratio - 1.0).abs().gt(self.hps.eps).float().mean()
                 # Value loss
                 if self.hps.shared_value:
@@ -274,7 +273,6 @@ class GAILAgent(object):
                 metrics['entropy_loss'].append(entropy_loss)
                 metrics['clip_loss'].append(clip_loss)
                 metrics['kl_approx'].append(kl_approx)
-                metrics['kl_max'].append(kl_max)
                 metrics['clip_frac'].append(clip_frac)
                 metrics['v_loss'].append(v_loss)
                 metrics['p_loss'].append(p_loss)
@@ -301,8 +299,8 @@ class GAILAgent(object):
                     else:
                         input_b = action
 
-                    _aux_loss = F.smooth_l1_loss(
-                        input=(self.policy.auxo(_state)),
+                    _aux_loss = F.mse_loss(
+                        input=self.policy.auxo(_state),
                         target=self.discriminator.D(input_a, input_b),
                         reduction='none',
                     )
@@ -379,12 +377,20 @@ class GAILAgent(object):
                         else:
                             input_b_e = action_e
 
-                        aux_loss += self.hps.kye_p_scale * F.smooth_l1_loss(
+                        aux_loss += self.hps.kye_p_scale * F.mse_loss(
                             input=self.policy.auxo(_state_e),
                             target=self.discriminator.D(input_a_e, input_b_e),
                         )
 
                     p_loss += aux_loss
+
+                # Early-stopping, based on KL value
+                kl_approx_mpi = mpi_mean_like(kl_approx.detach().cpu().numpy())  # none or all
+                kl_thres = 0.05  # not (yet) hyperparameterized
+                if iters_so_far > 20 and kl_approx_mpi > 1.5 * kl_thres:
+                    logger.info("triggered early-stopping")
+                    # Skip gradient update
+                    break
 
                 # Update parameters
                 self.p_optimizer.zero_grad()
@@ -519,7 +525,7 @@ class GAILAgent(object):
                     p_input_b = p_input_b[p_indices, :]
                 else:
                     _p_input_a = p_input_a
-                _aux_loss = F.smooth_l1_loss(
+                _aux_loss = F.mse_loss(
                     input=self.discriminator.auxo(p_input_a, p_input_b),
                     target=self.policy.sample(_p_input_a),
                     reduction='none',
@@ -584,7 +590,7 @@ class GAILAgent(object):
                         e_input_b = e_input_b[e_indices, :]
                     else:
                         _e_input_a = e_input_a
-                    aux_loss += self.hps.kye_d_scale * F.smooth_l1_loss(
+                    aux_loss += self.hps.kye_d_scale * F.mse_loss(
                         input=self.discriminator.auxo(e_input_a, e_input_b),
                         target=self.policy.sample(_e_input_a),
                     )
