@@ -54,6 +54,7 @@ parameters:
   d_ent_reg_scale: 0.001
   spectral_norm: false
   grad_pen: true
+  grad_pen_type: 'wgan'
   one_sided_pen: true
   fake_ls_type: '"none"'
   real_ls_type: '"none"'

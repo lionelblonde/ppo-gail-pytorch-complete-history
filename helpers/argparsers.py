@@ -65,6 +65,7 @@ def argparser(description="PPO/GAIL Experiment"):
                         type=int, default=None)
     boolean_flag(parser, 'spectral_norm', help='whether to use spectral norm', default=True)
     boolean_flag(parser, 'grad_pen', help='whether to use gradient penalty', default=True)
+    parser.add_argument('--grad_pen_type', type=str, default=None, choices=['wgan', 'dragan'])
     boolean_flag(parser, 'one_sided_pen', help='whether to use the one-sided version', default=True)
     parser.add_argument('--fake_ls_type', type=str, default='none')
     parser.add_argument('--real_ls_type', type=str, default='random-uniform_0.7_1.2')
