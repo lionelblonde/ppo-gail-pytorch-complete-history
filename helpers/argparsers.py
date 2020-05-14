@@ -74,8 +74,6 @@ def argparser(description="PPO/GAIL Experiment"):
 
     boolean_flag(parser, 'kye_p', default=False)
     parser.add_argument('--kye_p_scale', type=float, default=10.)
-    boolean_flag(parser, 'kye_d', default=False)
-    parser.add_argument('--kye_d_scale', type=float, default=10.)
     boolean_flag(parser, 'kye_mixing', default=False)
     boolean_flag(parser, 'adaptive_aux_scaling', default=False)
 

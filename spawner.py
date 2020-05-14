@@ -38,7 +38,7 @@ TYPE = 'sweep' if args.sweep else 'fixed'
 BOOL_ARGS = ['cuda', 'render', 'record', 'with_scheduler', 'layer_norm', 'shared_value',
              'state_only', 'minimax_only', 'spectral_norm', 'grad_pen', 'one_sided_pen',
              'wrap_absorb', 'd_batch_norm',
-             'kye_p', 'kye_d', 'kye_mixing', 'adaptive_aux_scaling',
+             'kye_p', 'kye_mixing', 'adaptive_aux_scaling',
              'red_batch_norm', 'rnd_explo', 'rnd_batch_norm', 'kye_batch_norm', 'dyn_batch_norm',
              'use_purl']
 
@@ -78,14 +78,14 @@ if BENCH == 'mujoco':
         }
         # Define per-environment ntasks map
         PEC = {
-            'InvertedPendulum': '8',
-            'Reacher': '8',
-            'InvertedDoublePendulum': '8',
-            'Hopper': '16',
-            'Walker2d': '16',
-            'HalfCheetah': '16',
-            'Ant': '16',
-            'Humanoid': '32',
+            'InvertedPendulum': 8,
+            'Reacher': 8,
+            'InvertedDoublePendulum': 8,
+            'Hopper': 16 if NEED_DEMOS else 32,
+            'Walker2d': 16 if NEED_DEMOS else 32,
+            'HalfCheetah': 16 if NEED_DEMOS else 32,
+            'Ant': 16 if NEED_DEMOS else 32,
+            'Humanoid': 16 if NEED_DEMOS else 32,
         }
         # Define per-environment timeouts map
         PET = {
@@ -142,37 +142,37 @@ elif BENCH == 'safety':
         }
         # Define per-environment ntasks map
         PEC = {
-            'Safexp-PointGoal1': '8',
-            'Safexp-PointGoal2': '8',
-            'Safexp-PointPush1': '8',
-            'Safexp-PointPush2': '8',
-            'Safexp-CarGoal1': '12',
-            'Safexp-CarGoal2': '12',
-            'Safexp-CarPush1': '12',
-            'Safexp-CarPush2': '12',
-            'Safexp-DoggoGoal1': '16',
-            'Safexp-DoggoGoal2': '16',
-            'Safexp-DoggoPush1': '16',
-            'Safexp-DoggoPush2': '16',
+            'Safexp-PointGoal1': 16 if NEED_DEMOS else 32,
+            'Safexp-PointGoal2': 16 if NEED_DEMOS else 32,
+            'Safexp-PointPush1': 16 if NEED_DEMOS else 32,
+            'Safexp-PointPush2': 16 if NEED_DEMOS else 32,
+            'Safexp-CarGoal1': 16 if NEED_DEMOS else 32,
+            'Safexp-CarGoal2': 16 if NEED_DEMOS else 32,
+            'Safexp-CarPush1': 16 if NEED_DEMOS else 32,
+            'Safexp-CarPush2': 16 if NEED_DEMOS else 32,
+            'Safexp-DoggoGoal1': 16 if NEED_DEMOS else 32,
+            'Safexp-DoggoGoal2': 16 if NEED_DEMOS else 32,
+            'Safexp-DoggoPush1': 16 if NEED_DEMOS else 32,
+            'Safexp-DoggoPush2': 16 if NEED_DEMOS else 32,
         }
         # Define per-environment timeouts map
         PET = {
-            'Safexp-PointGoal1': '0-06:00:00',
-            'Safexp-PointGoal2': '0-06:00:00',
-            'Safexp-PointPush1': '0-06:00:00',
-            'Safexp-PointPush2': '0-06:00:00',
-            'Safexp-CarGoal1': '0-06:00:00',
-            'Safexp-CarGoal2': '0-06:00:00',
-            'Safexp-CarPush1': '0-06:00:00',
-            'Safexp-CarPush2': '0-06:00:00',
-            'Safexp-DoggoGoal1': '0-06:00:00',
-            'Safexp-DoggoGoal2': '0-06:00:00',
-            'Safexp-DoggoPush1': '0-06:00:00',
-            'Safexp-DoggoPush2': '0-06:00:00',
+            'Safexp-PointGoal1': '0-12:00:00',
+            'Safexp-PointGoal2': '0-12:00:00',
+            'Safexp-PointPush1': '0-12:00:00',
+            'Safexp-PointPush2': '0-12:00:00',
+            'Safexp-CarGoal1': '0-12:00:00',
+            'Safexp-CarGoal2': '0-12:00:00',
+            'Safexp-CarPush1': '0-12:00:00',
+            'Safexp-CarPush2': '0-12:00:00',
+            'Safexp-DoggoGoal1': '0-12:00:00',
+            'Safexp-DoggoGoal2': '0-12:00:00',
+            'Safexp-DoggoPush1': '0-12:00:00',
+            'Safexp-DoggoPush2': '0-12:00:00',
         }
 
 elif BENCH == 'atari':
-    map_ = {
+    TOC = {
         'easy': ['Pong'],
         'normal': ['Qbert',
                    'MsPacman',
@@ -191,10 +191,29 @@ elif BENCH == 'atari':
         ENVS = TOC[args.envset]
     ENVS = ["{}NoFrameskip-v4".format(name) for name in ENVS]
 elif BENCH == 'pycolab':
-    map_ = {'box_world': ['BoxWorld-v0'],
-            'cliff_world': ['CliffWalk-v0'],
-            }
+    TOC = {
+        'box_world': ['BoxWorld-v0'],
+        'cliff_walk': ['CliffWalk-v0'],
+    }
     ENVS = TOC[args.envset]
+
+    if CLUSTER == 'baobab':
+        # Define per-environement partitions map
+        PEP = {
+            'BoxWorld': 'shared-EL7,mono-shared-EL7',
+            'CliffWalk': 'shared-EL7,mono-shared-EL7',
+        }
+        # Define per-environment ntasks map
+        PEC = {
+            'BoxWorld': 16 if NEED_DEMOS else 32,
+            'CliffWalk': 16 if NEED_DEMOS else 32,
+        }
+        # Define per-environment timeouts map
+        PET = {
+            'BoxWorld': '0-12:00:00',
+            'CliffWalk': '0-6:00:00',
+        }
+
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 
@@ -308,8 +327,6 @@ def get_hps(sweep):
 
             'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': np.random.choice([0.01, 0.1, 0.5]),
-            'kye_d': CONFIG['parameters'].get('kye_d', False),
-            'kye_d_scale': np.random.choice([0.01, 0.1, 0.5]),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 
@@ -397,8 +414,6 @@ def get_hps(sweep):
 
             'kye_p': CONFIG['parameters'].get('kye_p', False),
             'kye_p_scale': CONFIG['parameters'].get('kye_p_scale', 0.1),
-            'kye_d': CONFIG['parameters'].get('kye_d', False),
-            'kye_d_scale': CONFIG['parameters'].get('kye_d_scale', 0.1),
             'kye_mixing': CONFIG['parameters'].get('kye_mixing', False),
             'adaptive_aux_scaling': CONFIG['parameters'].get('adaptive_aux_scaling', False),
 

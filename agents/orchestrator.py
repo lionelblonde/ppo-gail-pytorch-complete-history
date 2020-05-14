@@ -18,6 +18,7 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 
 def ppo_rollout_generator(env, agent, rollout_len):
 
+    benchmark = get_benchmark(agent.hps.env_id)
     t = 0
     done = True
     # Reset agent's env
@@ -27,13 +28,15 @@ def ppo_rollout_generator(env, agent, rollout_len):
     # Init current episode statistics
     cur_ep_len = 0
     cur_ep_env_ret = 0
+    if benchmark == 'safety':
+        cur_ep_env_cost = 0
 
     while True:
 
         # Predict
         ac, v, logp = agent.predict(ob, sample_or_mode=True)
 
-        if not isinstance(agent.ac_space, spaces.Discrete):
+        if not agent.is_discrete:
             # NaN-proof and clip
             ac = np.nan_to_num(ac)
             ac = np.clip(ac, env.action_space.low, env.action_space.high)
@@ -44,10 +47,10 @@ def ppo_rollout_generator(env, agent, rollout_len):
 
             for k in rollout.keys():
                 if k in ['obs0', 'obs1']:
-                    rollout[k] = np.array(rollout[k]).reshape(-1, agent.ob_dim)
+                    rollout[k] = np.array(rollout[k]).reshape(-1, *agent.ob_shape)
                 elif k == 'acs':
-                    rollout[k] = np.array(rollout[k]).reshape(-1, agent.ac_dim)
-                elif k in ['vs', 'logps', 'env_rews', 'dones']:
+                    rollout[k] = np.array(rollout[k]).reshape(-1, *agent.ac_shape)
+                elif k in ['vs', 'logps', 'env_rews', 'env_costs', 'dones']:
                     rollout[k] = np.array(rollout[k]).reshape(-1, 1)
                 else:
                     rollout[k] = np.array(rollout[k])
@@ -61,9 +64,13 @@ def ppo_rollout_generator(env, agent, rollout_len):
         # Interact with env(s)
         new_ob, env_rew, done, info = env.step(ac)
 
-        if 'cost' in info:
-            # Substract the cost
-            env_rew -= 0.1 * info['cost']
+        if benchmark == 'safety':
+            env_cost = info.get('cost', 0)
+            # Add the cost to the reward
+            env_rew -= env_cost
+
+        if agent.hps.rnd_explo:
+            env_rew += agent.rnd.get_int_rew(new_ob[None])
 
         # Populate collections
         rollout['obs0'].append(ob)
@@ -72,15 +79,19 @@ def ppo_rollout_generator(env, agent, rollout_len):
         rollout['vs'].append(v)
         rollout['logps'].append(logp)
         rollout['env_rews'].append(env_rew)
+        if benchmark == 'safety':
+            rollout['env_costs'].append(env_cost)
         rollout['dones'].append(done)
 
         # Update current episode statistics
         cur_ep_len += 1
-        elapsed_steps = (env._elapsed_steps
-                         if hasattr(env, '_elapsed_steps')
-                         else env.steps)  # for safety gym
-        assert elapsed_steps == cur_ep_len  # sanity check
+        # elapsed_steps = (env._elapsed_steps
+        #                  if hasattr(env, '_elapsed_steps')
+        #                  else env.steps)  # for safety gym
+        # assert elapsed_steps == cur_ep_len  # sanity check
         cur_ep_env_ret += env_rew
+        if benchmark == 'safety':
+            cur_ep_env_cost += env_cost
 
         # Set current state with the next
         ob = np.array(deepcopy(new_ob))
@@ -92,6 +103,9 @@ def ppo_rollout_generator(env, agent, rollout_len):
             cur_ep_len = 0
             rollout['ep_env_rets'].append(cur_ep_env_ret)
             cur_ep_env_ret = 0
+            if benchmark == 'safety':
+                rollout['ep_env_costs'].append(cur_ep_env_cost)
+                cur_ep_env_cost = 0
             # Reset env
             ob = np.array(env.reset())
 
@@ -100,6 +114,7 @@ def ppo_rollout_generator(env, agent, rollout_len):
 
 def gail_rollout_generator(env, agent, rollout_len):
 
+    benchmark = get_benchmark(agent.hps.env_id)
     t = 0
     done = True
     # Reset agent's env
@@ -110,6 +125,8 @@ def gail_rollout_generator(env, agent, rollout_len):
     cur_ep_len = 0
     cur_ep_env_ret = 0
     cur_ep_syn_ret = 0
+    if benchmark == 'safety':
+        cur_ep_env_cost = 0
 
     while True:
 
@@ -151,7 +168,10 @@ def gail_rollout_generator(env, agent, rollout_len):
             rollout.clear()
 
         # Interact with env(s)
-        new_ob, env_rew, done, _ = env.step(ac)
+        new_ob, env_rew, done, info = env.step(ac)
+
+        if benchmark == 'safety':
+            env_cost = info.get('cost', 0)
 
         elapsed_steps = (env._elapsed_steps
                          if hasattr(env, '_elapsed_steps')
@@ -172,6 +192,8 @@ def gail_rollout_generator(env, agent, rollout_len):
             rollout['vs'].append(v)
             rollout['logps'].append(logp)
             rollout['env_rews'].append(env_rew)
+            if benchmark == 'safety':
+                rollout['env_costs'].append(env_cost)
             rollout['dones'].append(done)
             if done and not elapsed_steps == max_episode_steps:
                 # Wrap with an absorbing state
@@ -192,6 +214,8 @@ def gail_rollout_generator(env, agent, rollout_len):
                 rollout['vs'].append(v)
                 rollout['logps'].append(logp)
                 rollout['env_rews'].append(env_rew)
+                if benchmark == 'safety':
+                    rollout['env_costs'].append(env_cost)
                 rollout['dones'].append(done)
                 rollout['syn_rews'].append(syn_rew)
             else:
@@ -209,6 +233,8 @@ def gail_rollout_generator(env, agent, rollout_len):
             rollout['vs'].append(v)
             rollout['logps'].append(logp)
             rollout['env_rews'].append(env_rew)
+            if benchmark == 'safety':
+                rollout['env_costs'].append(env_cost)
             rollout['dones'].append(done)
             syn_rew = agent.get_syn_rew(ob[None], ac[None], new_ob[None])
             if agent.hps.rnd_explo:
@@ -220,6 +246,8 @@ def gail_rollout_generator(env, agent, rollout_len):
         cur_ep_len += 1
         assert elapsed_steps == cur_ep_len  # sanity check
         cur_ep_env_ret += env_rew
+        if benchmark == 'safety':
+            cur_ep_env_cost += env_cost
         cur_ep_syn_ret += syn_rew
 
         # Set current state with the next
@@ -234,6 +262,9 @@ def gail_rollout_generator(env, agent, rollout_len):
             cur_ep_env_ret = 0
             rollout['ep_syn_rets'].append(cur_ep_syn_ret)
             cur_ep_syn_ret = 0
+            if benchmark == 'safety':
+                rollout['ep_env_costs'].append(cur_ep_env_cost)
+                cur_ep_env_cost = 0
             # Reset env
             ob = np.array(env.reset())
 
@@ -246,8 +277,9 @@ def ep_generator(env, agent, render, record):
     they will be converted to numpy arrays once complete and ready to be yielded.
     """
 
+    benchmark = get_benchmark(agent.hps.env_id)
+
     if record:
-        benchmark = get_benchmark(agent.hps.env_id)
 
         def bgr_to_rgb(x):
             _b = np.expand_dims(x[..., 0], -1)
@@ -292,11 +324,14 @@ def ep_generator(env, agent, render, record):
     acs = []
     vs = []
     env_rews = []
+    if benchmark == 'safety':
+        cur_ep_env_cost = 0
+        env_costs = []
 
     while True:
         ac, v, _ = agent.predict(ob, sample_or_mode=False)
 
-        if not isinstance(agent.ac_space, spaces.Discrete):
+        if not agent.is_discrete:
             # NaN-proof and clip
             ac = np.nan_to_num(ac)
             ac = np.clip(ac, env.action_space.low, env.action_space.high)
@@ -308,7 +343,7 @@ def ep_generator(env, agent, render, record):
             obs_render.append(ob_orig)
         acs.append(ac)
         vs.append(v)
-        new_ob, env_rew, done, _ = env.step(ac)
+        new_ob, env_rew, done, info = env.step(ac)
 
         if render:
             env.render()
@@ -316,9 +351,16 @@ def ep_generator(env, agent, render, record):
         if record:
             ob_orig = _render()
 
+        if benchmark == 'safety':
+            env_cost = info.get('cost', 0)
+
         env_rews.append(env_rew)
+        if benchmark == 'safety':
+            env_costs.append(env_cost)
         cur_ep_len += 1
         cur_ep_env_ret += env_rew
+        if benchmark == 'safety':
+            cur_ep_env_cost += env_cost
         ob = np.array(deepcopy(new_ob))
         if done:
             obs = np.array(obs)
@@ -334,6 +376,9 @@ def ep_generator(env, agent, render, record):
                    "ep_env_ret": cur_ep_env_ret}
             if record:
                 out.update({"obs_render": obs_render})
+            if benchmark == 'safety':
+                out.update({"env_costs": env_costs,
+                            "ep_env_cost": cur_ep_env_cost})
 
             yield out
 
@@ -344,6 +389,10 @@ def ep_generator(env, agent, render, record):
                 obs_render = []
             acs = []
             env_rews = []
+            if benchmark == 'safety':
+                cur_ep_env_cost = 0
+                env_costs = []
+
             ob = np.array(env.reset())
 
             if record:
@@ -398,6 +447,9 @@ def learn(args,
     # Create an agent
     agent = agent_wrapper()
 
+    # Get benchmark
+    benchmark = get_benchmark(agent.hps.env_id)
+
     # Create context manager that records the time taken by encapsulated ops
     timed = timed_cm_wrapper(logger)
 
@@ -408,8 +460,11 @@ def learn(args,
 
     # Create collections
     d = defaultdict(list)
-    b_roll = deque(maxlen=10)
-    b_eval = deque(maxlen=10)
+    # b_roll_ret = deque(maxlen=10)
+    b_eval_ret = deque(maxlen=10)
+    if benchmark == 'safety':
+        # b_roll_cost = deque(maxlen=10)
+        b_eval_cost = deque(maxlen=10)
 
     # Set up model save directory
     if rank == 0:
@@ -463,10 +518,14 @@ def learn(args,
         if args.algo == 'ppo':
             with timed('interacting'):
                 rollout = roll_gen.__next__()
-                d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
-                roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
-                d['roll_env_ret'].append(roll_env_ret)
-                b_roll.append(roll_env_ret)
+                # d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
+                # roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
+                # d['roll_env_ret'].append(roll_env_ret)
+                # b_roll_ret.append(roll_env_ret)
+                # if benchmark == 'safety':
+                #     roll_env_cost = mpi_mean_reduce(rollout['ep_env_costs'])
+                #     d['roll_env_cost'].append(roll_env_cost)
+                #     b_roll_cost.append(roll_env_cost)
 
             with timed('training'):
                 metrics, lrnow = agent.update_policy_value(
@@ -482,10 +541,14 @@ def learn(args,
                 with timed('interacting'):
                     # Unpack (one rollout dict for policy training, one for reward training)
                     rollout = roll_gen.__next__()
-                    d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
-                    roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
-                    d['roll_env_ret'].append(roll_env_ret)
-                    b_roll.append(roll_env_ret)
+                    # d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
+                    # roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
+                    # d['roll_env_ret'].append(roll_env_ret)
+                    # b_roll_ret.append(roll_env_ret)
+                    # if benchmark == 'safety':
+                    #     roll_env_cost = mpi_mean_reduce(rollout['ep_env_costs'])
+                    #     d['roll_env_cost'].append(roll_env_cost)
+                    #     b_roll_cost.append(roll_env_cost)
 
                 with timed('policy and value training'):
                     metrics, lrnow = agent.update_policy_value(
@@ -503,8 +566,6 @@ def learn(args,
                         rollout=rollout,
                     )
                     d['dis_losses'].append(metrics['d_loss'])
-                    if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
-                        d['cos_sims_d'].append(metrics['cos_sim'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -518,8 +579,12 @@ def learn(args,
                         # Aggregate data collected during the evaluation to the buffers
                         d['eval_len'].append(eval_ep['ep_len'])
                         d['eval_env_ret'].append(eval_ep['ep_env_ret'])
+                        if benchmark == 'safety':
+                            d['eval_env_cost'].append(eval_ep['ep_env_cost'])
 
-                    b_eval.append(np.mean(d['eval_env_ret']))
+                    b_eval_ret.append(np.mean(d['eval_env_ret']))
+                    if benchmark == 'safety':
+                        b_eval_cost.append(np.mean(d['eval_env_cost']))
 
         # Increment counters
         iters_so_far += 1
@@ -535,11 +600,12 @@ def learn(args,
                 logger.record_tabular('timestep', timesteps_so_far)
                 logger.record_tabular('eval_len', np.mean(d['eval_len']))
                 logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-                logger.record_tabular('avg_eval_env_ret', np.mean(b_eval))
+                logger.record_tabular('avg_eval_env_ret', np.mean(b_eval_ret))
+                if benchmark == 'safety':
+                    logger.record_tabular('eval_env_cost', np.mean(d['eval_env_cost']))
+                    logger.record_tabular('avg_eval_env_cost', np.mean(b_eval_cost))
                 if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                     logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
-                if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
-                    logger.record_tabular('cos_sim_d', np.mean(d['cos_sims_d']))
                 logger.info("dumping stats in .csv file")
                 logger.dump_tabular()
 
@@ -560,10 +626,14 @@ def learn(args,
             # Log stats in dashboard
             wandb.log({"num_workers": np.array(world_size)})
 
-            wandb.log({'roll_len': np.mean(d['roll_len']),
-                       'roll_env_ret': np.mean(d['roll_env_ret']),
-                       'avg_roll_env_ret': np.mean(b_roll)},
-                      step=timesteps_so_far)
+            # wandb.log({'roll_len': np.mean(d['roll_len']),
+            #            'roll_env_ret': np.mean(d['roll_env_ret']),
+            #            'avg_roll_env_ret': np.mean(b_roll_ret)},
+            #           step=timesteps_so_far)
+            # if benchmark == 'safety':
+            #     wandb.log({'roll_env_cost': np.mean(d['roll_env_cost']),
+            #                'avg_roll_env_cost': np.mean(b_roll_cost)},
+            #               step=timesteps_so_far)
 
             wandb.log({'pol_loss': np.mean(d['pol_losses']),
                        'val_loss': np.mean(d['val_losses']),
@@ -575,15 +645,16 @@ def learn(args,
                 if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                     wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
                               step=timesteps_so_far)
-                if agent.hps.kye_d and agent.hps.adaptive_aux_scaling:
-                    wandb.log({'cos_sim_d': np.mean(d['cos_sims_d'])},
-                              step=timesteps_so_far)
 
             if (iters_so_far - 1) % args.eval_frequency == 0:
                 wandb.log({'eval_len': np.mean(d['eval_len']),
                            'eval_env_ret': np.mean(d['eval_env_ret']),
-                           'avg_eval_env_ret': np.mean(b_eval)},
+                           'avg_eval_env_ret': np.mean(b_eval_ret)},
                           step=timesteps_so_far)
+                if benchmark == 'safety':
+                    wandb.log({'eval_env_cost': np.mean(d['eval_env_cost']),
+                               'avg_eval_env_cost': np.mean(b_eval_cost)},
+                              step=timesteps_so_far)
 
         # Clear the iteration's running stats
         d.clear()

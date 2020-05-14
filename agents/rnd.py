@@ -121,7 +121,10 @@ class RandomNetworkDistillation(object):
             state = batch['obs0'].to(self.device)
 
             if self.hps.rnd_batch_norm:
-                _state = batch['obs0_orig'].to(self.device)
+                if 'obs_orig' in batch:  # gail
+                    _state = batch['obs0_orig'].to(self.device)
+                else:  # ppo
+                    _state = batch['obs0'].to(self.device)
                 # Update running moments for observations
                 self.pred_net.rms_obs.update(_state)
                 self.targ_net.rms_obs.update(_state)

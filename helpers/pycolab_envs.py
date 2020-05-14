@@ -77,10 +77,9 @@ class CliffWalkEnv(pycolab_gymify.PyColabEnv):
     def make_game(self):
         """Reimplemention of the game map."""
         # We modify the game art to make the cliff section visual discernible.
-        BOOTLEG_GAME_ART = ['............',
-                            '............',
-                            '............',
-                            'Pxxxxxxxxxx.']
+        BOOTLEG_GAME_ART = ['......',
+                            '......',
+                            'Pxxxx.']
         return ascii_art.ascii_art_to_game(BOOTLEG_GAME_ART,
                                            what_lies_beneath='.',
                                            sprites={'P': cliff_walk.PlayerSprite})
@@ -97,6 +96,6 @@ def make_pycolab(env_id):
     if env_id == 'BoxWorld-v0':
         return BoxWorldEnv()
     elif env_id == 'CliffWalk-v0':
-        return CliffWalkEnv(max_iterations=250)
+        return CliffWalkEnv(max_iterations=150)
     else:
         pass

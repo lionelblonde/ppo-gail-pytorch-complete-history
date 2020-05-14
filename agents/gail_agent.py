@@ -8,10 +8,13 @@ from torch.utils.data import DataLoader
 from torch import autograd
 from torch.autograd import Variable
 
+from gym import spaces
+
 from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
-from helpers.distributed_util import average_gradients, sync_with_root, mpi_mean_like
+from helpers.distributed_util import average_gradients, sync_with_root
+# from helpers.distributed_util import mpi_mean_like
 from agents.nets import GaussPolicy, Value, Discriminator
 from agents.gae import gae
 
@@ -32,6 +35,7 @@ class GAILAgent(object):
 
         log_env_info(logger, self.env)
 
+        self.is_discrete = isinstance(self.ac_space, spaces.Discrete)
         self.ob_dim = self.ob_shape[0]  # num dims
         self.ac_dim = self.ac_shape[0]  # num dims
         self.device = device
@@ -384,13 +388,13 @@ class GAILAgent(object):
 
                     p_loss += aux_loss
 
-                # Early-stopping, based on KL value
-                kl_approx_mpi = mpi_mean_like(kl_approx.detach().cpu().numpy())  # none or all
-                kl_thres = 0.05  # not (yet) hyperparameterized
-                if iters_so_far > 20 and kl_approx_mpi > 1.5 * kl_thres:
-                    logger.info("triggered early-stopping")
-                    # Skip gradient update
-                    break
+                # # Early-stopping, based on KL value
+                # kl_approx_mpi = mpi_mean_like(kl_approx.detach().cpu().numpy())  # none or all
+                # kl_thres = 0.05  # not (yet) hyperparameterized
+                # if iters_so_far > 20 and kl_approx_mpi > 1.5 * kl_thres:
+                #     logger.info("triggered early-stopping", kl_approx_mpi)
+                #     # Skip gradient update
+                #     break
 
                 # Update parameters
                 self.p_optimizer.zero_grad()
@@ -514,88 +518,6 @@ class GAILAgent(object):
                 d_loss += grad_pen
                 # Log metrics
                 metrics['grad_pen'].append(grad_pen)
-
-            if self.hps.kye_d:
-
-                # Create and add auxiliary loss
-                if self.hps.wrap_absorb:
-                    _, p_indices = self.remove_absorbing(p_input_a)
-                    _p_input_a = p_input_a[p_indices, 0:-1]
-                    p_input_a = p_input_a[p_indices, :]
-                    p_input_b = p_input_b[p_indices, :]
-                else:
-                    _p_input_a = p_input_a
-                _aux_loss = F.mse_loss(
-                    input=self.discriminator.auxo(p_input_a, p_input_b),
-                    target=self.policy.sample(_p_input_a),
-                    reduction='none',
-                )
-                _aux_loss = _aux_loss.mean(dim=-1, keepdim=True)
-
-                if self.hps.adaptive_aux_scaling:
-                    inputs = []
-                    for n, p in self.discriminator.fc_stack.named_parameters():
-                        if p.requires_grad:
-                            if len(p.shape) == 1:  # ignore the bias vectors
-                                continue
-                            inputs.append(p)
-                    grads_a_list = []
-                    grads_b_list = []
-                    for i in range(_p_input_a.size(0)):
-                        # Compute the gradients of the shared weights for the main task
-                        grads_a = autograd.grad(
-                            outputs=[_p_e_loss[i, ...]],  # without entropy loss
-                            inputs=[*inputs],
-                            only_inputs=True,
-                            grad_outputs=[torch.ones_like(_p_e_loss[i, ...])],
-                            retain_graph=True,
-                            create_graph=True,
-                            allow_unused=True,
-                        )
-                        # Compute the gradients of the shared weights for the auxiliary task
-                        grads_b = autograd.grad(
-                            outputs=[_aux_loss[i, ...]],
-                            inputs=[*inputs],
-                            only_inputs=True,
-                            grad_outputs=[torch.ones_like(_aux_loss[i, ...])],
-                            retain_graph=True,
-                            create_graph=True,
-                            allow_unused=True,
-                        )
-                        grads_a = torch.cat(list(grads_a), dim=-1)
-                        grads_b = torch.cat(list(grads_b), dim=-1)
-                        grads_a_list.append(grads_a)
-                        grads_b_list.append(grads_b)
-                    grads_a = torch.stack(grads_a_list, dim=0)
-                    grads_b = torch.stack(grads_b_list, dim=0)
-                    cos_sims = F.cosine_similarity(grads_a, grads_b).unsqueeze(-1)
-                    cos_sims = cos_sims.detach()  # safety measure
-                    metrics['cos_sim'].append(cos_sims.mean())
-
-                    cos_sims = cos_sims.mean(dim=1)
-                    assert _aux_loss.shape == cos_sims.shape, "shape mismatch"
-                    _aux_loss *= torch.max(torch.zeros_like(cos_sims), cos_sims)
-
-                _aux_loss *= self.hps.kye_d_scale
-
-                aux_loss = _aux_loss.mean()
-                metrics['aux_loss'].append(aux_loss)
-
-                if self.hps.kye_mixing:
-                    # Add mixing auxiliary loss
-                    if self.hps.wrap_absorb:
-                        _, e_indices = self.remove_absorbing(e_input_a)
-                        _e_input_a = e_input_a[e_indices, 0:-1]
-                        e_input_a = e_input_a[e_indices, :]
-                        e_input_b = e_input_b[e_indices, :]
-                    else:
-                        _e_input_a = e_input_a
-                    aux_loss += self.hps.kye_d_scale * F.mse_loss(
-                        input=self.discriminator.auxo(e_input_a, e_input_b),
-                        target=self.policy.sample(_e_input_a),
-                    )
-
-                d_loss += aux_loss
 
             # Update parameters
             self.d_optimizer.zero_grad()

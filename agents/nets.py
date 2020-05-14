@@ -181,7 +181,7 @@ class CatToolkit(object):
     @staticmethod
     def mode(logits):
         probs = torch.sigmoid(logits)
-        return torch.argmax(probs)
+        return torch.argmax(probs, dim=-1)
 
     @staticmethod
     def kl(logits, other_logits):
@@ -217,6 +217,47 @@ class ShallowMLP(nn.Module):
 
     def forward(self, x):
         x = self.fc_stack(x)
+        return x
+
+
+class TeensyMiniCNN(nn.Module):
+
+    def __init__(self, env, hps):
+        super(TeensyMiniCNN, self).__init__()
+        in_width, in_height, in_chan = env.observation_space.shape
+        # Assemble the convolutional stack
+        self.conv2d_stack = nn.Sequential(OrderedDict([
+            ('conv2d_block_1', nn.Sequential(OrderedDict([
+                ('conv2d', nn.Conv2d(in_chan, 16, kernel_size=2, stride=1, padding=0)),
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Assemble the fully-connected stack
+        self.fc_stack = nn.Sequential(OrderedDict([
+            ('fc_block', nn.Sequential(OrderedDict([
+                ('fc', nn.Linear(16 * conv_to_fc(self.conv2d_stack, in_width, in_height), 16)),
+                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(16)),
+                # According to the paper "Parameter Space Noise for Exploration", layer
+                # normalization should only be used for the fully-connected part of the network.
+                ('nl', nn.ReLU()),
+            ]))),
+        ]))
+        # Perform initialization
+        self.conv2d_stack.apply(init(weight_scale=math.sqrt(2)))
+        self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
+
+    def forward(self, x):
+        # Normalize the observations
+        x /= 255.
+        # Swap from NHWC to NCHW
+        x = nhwc_to_nchw(x)
+        # Stack the convolutional layers
+        x = self.conv2d_stack(x)
+        # Flatten the feature maps into a vector
+        x = x.view(x.size(0), -1)
+        # Stack the fully-connected layers
+        x = self.fc_stack(x)
+        # Return the resulting embedding
         return x
 
 
@@ -412,8 +453,11 @@ class LargeImpalaCNN(nn.Module):
 
 
 def perception_stack_parser(x):
-    if x == 'shallow_mlp':
-        return (lambda u, v: ShallowMLP(u, v, hidsize=100)), 100
+    if 'mlp' in x:
+        _, hidsize = x.split('_')
+        return (lambda u, v: ShallowMLP(u, v, hidsize=int(hidsize))), int(hidsize)
+    elif x == 'teensy_mini_cnn':
+        return (lambda u, v: TeensyMiniCNN(u, v)), 16
     elif x == 'teeny_tiny_cnn':
         return (lambda u, v: TeenyTinyCNN(u, v)), 64
     elif x == 'nature_cnn':
@@ -541,6 +585,7 @@ class CatPolicy(nn.Module):
     def __init__(self, env, hps):
         super(CatPolicy, self).__init__()
         ac_dim = env.action_space.n
+        self.hps = hps
         # Define observation whitening
         self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define perception stack
@@ -610,7 +655,7 @@ class CatPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        # ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)  # FIXME hp
         x = self.perception_stack(ob)
         ac_logits = self.p_head(self.p_fc_stack(x))
         out = [ac_logits]
@@ -673,43 +718,23 @@ class Discriminator(nn.Module):
             in_dim += ac_dim
         # Assemble the layers and output heads
         self.fc_stack = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
+            ('fc_block_1', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(in_dim, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
-        ]))
-        self.d_fc_stack = nn.Sequential(OrderedDict([
-            ('fc_block', nn.Sequential(OrderedDict([
+            ('fc_block_2', nn.Sequential(OrderedDict([
                 ('fc', apply_sn(nn.Linear(100, 100))),
                 ('nl', nn.LeakyReLU(negative_slope=self.leak)),
             ]))),
         ]))
         self.d_head = nn.Linear(100, 1)
-        if self.hps.kye_d:
-            assert self.hps.state_only, "only allowed in the state-only setting"
-            self.a_fc_stack = nn.Sequential(OrderedDict([
-                ('fc_block', nn.Sequential(OrderedDict([
-                    ('fc', nn.Linear(100, 100)),
-                    ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(100)),
-                    ('nl', nn.ReLU()),
-                ]))),
-            ]))
-            self.a_head = nn.Linear(100, env.action_space.shape[0])  # always original ac_dim
         # Perform initialization
         self.fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
-        self.d_fc_stack.apply(init(weight_scale=math.sqrt(2) / math.sqrt(1 + self.leak**2)))
         self.d_head.apply(init(weight_scale=0.01))
-        if self.hps.kye_d:
-            self.a_fc_stack.apply(init(weight_scale=math.sqrt(2)))
-            self.a_head.apply(init(weight_scale=0.01))
 
     def D(self, input_a, input_b):
         out = self.forward(input_a, input_b)
         return out[0]  # score
-
-    def auxo(self, input_a, input_b):
-        out = self.forward(input_a, input_b)
-        return out[1]  # aux
 
     def forward(self, input_a, input_b):
         if self.hps.d_batch_norm:
@@ -737,9 +762,5 @@ class Discriminator(nn.Module):
         # Concatenate
         x = torch.cat([input_a, input_b], dim=-1)
         x = self.fc_stack(x)
-        score = self.d_head(self.d_fc_stack(x))  # no sigmoid here
-        out = [score]
-        if self.hps.kye_d:
-            action = self.a_head(self.a_fc_stack(x))
-            out.append(action)
-        return out
+        score = self.d_head(x)  # no sigmoid here
+        return score

@@ -14,6 +14,8 @@ from helpers.distributed_util import average_gradients, sync_with_root, mpi_mean
 from agents.nets import GaussPolicy, Value, CatPolicy
 from agents.gae import gae
 
+from agents.rnd import RandomNetworkDistillation
+
 
 class PPOAgent(object):
 
@@ -27,9 +29,9 @@ class PPOAgent(object):
 
         log_env_info(logger, self.env)
 
-        self.ob_dim = self.ob_shape[-1]  # num dims
         self.is_discrete = isinstance(self.ac_space, spaces.Discrete)
         self.ac_dim = self.ac_space.n if self.is_discrete else self.ac_shape[-1]
+
         self.device = device
         self.hps = hps
         if self.hps.clip_norm <= 0:
@@ -61,6 +63,13 @@ class PPOAgent(object):
         log_module_info(logger, 'policy', self.policy)
         if not self.hps.shared_value:
             log_module_info(logger, 'value', self.policy)
+
+        if self.hps.rnd_explo:
+            self.rnd = RandomNetworkDistillation(
+                self.env,
+                self.device,
+                self.hps,
+            )
 
     def predict(self, ob, sample_or_mode):
         # Create tensor from the state (`require_grad=False` by default)
@@ -151,13 +160,13 @@ class PPOAgent(object):
                 metrics['v_loss'].append(v_loss)
                 metrics['p_loss'].append(p_loss)
 
-                # Early-stopping, based on KL value
-                kl_approx_mpi = mpi_mean_like(kl_approx.detach().cpu().numpy())  # none or all
-                kl_thres = 0.05  # not (yet) hyperparameterized
-                if iters_so_far > 20 and kl_approx_mpi > 1.5 * kl_thres:
-                    logger.info("triggered early-stopping")
-                    # Skip gradient update
-                    break
+                # # Early-stopping, based on KL value
+                # kl_approx_mpi = mpi_mean_like(kl_approx.detach().cpu().numpy())  # none or all
+                # kl_thres = 0.05  # not (yet) hyperparameterized
+                # if iters_so_far > 20 and kl_approx_mpi > 1.5 * kl_thres:
+                #     logger.info("triggered early-stopping")
+                #     # Skip gradient update
+                #     break
 
                 # Update parameters
                 self.p_optimizer.zero_grad()
@@ -172,6 +181,10 @@ class PPOAgent(object):
                     v_loss.backward()
                     average_gradients(self.value, self.device)
                     self.v_optimizer.step()
+
+            if self.hps.rnd_explo:
+                # In accordance with RND's pseudo-code, train as many times as the policy
+                self.rnd.update(dataloader)  # ignore returned var
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
         return metrics, self.scheduler.get_last_lr()
