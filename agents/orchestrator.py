@@ -10,10 +10,10 @@ import numpy as np
 from gym import spaces
 
 from helpers import logger
-from helpers.distributed_util import mpi_mean_reduce
 # from helpers.distributed_util import sync_check
 from helpers.env_makers import get_benchmark
 from helpers.console_util import timed_cm_wrapper, log_iter_info
+from helpers.opencv_util import record_video
 
 
 def ppo_rollout_generator(env, agent, rollout_len):
@@ -281,6 +281,9 @@ def ep_generator(env, agent, render, record):
 
     if record:
 
+        width = 320 if benchmark == 'dmc' else 500
+        height = 240 if benchmark == 'dmc' else 500
+
         def bgr_to_rgb(x):
             _b = np.expand_dims(x[..., 0], -1)
             _g = np.expand_dims(x[..., 1], -1)
@@ -293,12 +296,12 @@ def ep_generator(env, agent, render, record):
         if benchmark == 'atari':
             def _render():
                 return bgr_to_rgb(env.render(**kwargs))
-        elif benchmark == 'safety':
+        elif benchmark in ['dmc', 'safety']:
             def _render():
                 x = deepcopy(env.render(mode='rgb_array',
                                         camera_id=1,
-                                        width=500,
-                                        height=500))
+                                        width=width,
+                                        height=height))
                 _b = np.expand_dims(x[..., 0], -1)
                 _g = np.expand_dims(x[..., 1], -1)
                 _r = np.expand_dims(x[..., 2], -1)
@@ -399,19 +402,22 @@ def ep_generator(env, agent, render, record):
                 ob_orig = _render()
 
 
-def evaluate(env,
+def evaluate(args,
+             env,
              agent_wrapper,
+             experiment_name,
              num_trajs,
              iter_num,
-             render,
              model_path):
 
-    # Rebuild the computational graph
     # Create an agent
     agent = agent_wrapper()
     # Create episode generator
-    ep_gen = ep_generator(env, agent, render)
-    # Initialize and load the previously learned weights into the freshly re-built graph
+    ep_gen = ep_generator(env, agent, args.render, args.record)
+
+    if args.record:
+        vid_dir = osp.join(args.video_dir, experiment_name)
+        os.makedirs(vid_dir, exist_ok=True)
 
     # Load the model
     agent.load(model_path, iter_num)
@@ -428,6 +434,10 @@ def evaluate(env,
         # Aggregate to the history data structures
         ep_lens.append(ep_len)
         ep_env_rets.append(ep_env_ret)
+        if args.record:
+            # Record a video of the episode
+            record_video(vid_dir, i, traj['obs_render'])
+
     # Log some statistics of the collected trajectories
     ep_len_mean = np.mean(ep_lens)
     ep_env_ret_mean = np.mean(ep_env_rets)
@@ -470,6 +480,9 @@ def learn(args,
     if rank == 0:
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
+        if args.record:
+            vid_dir = osp.join(args.video_dir, experiment_name)
+            os.makedirs(vid_dir, exist_ok=True)
 
     # Setup wandb
     if rank == 0:
@@ -611,17 +624,7 @@ def learn(args,
 
             if ((iters_so_far - 1) % args.eval_frequency == 0) and args.record:
                 # Record the last episode in a video
-                frames = np.split(eval_ep['obs_render'], 1, axis=-1)
-                frames = np.concatenate(np.array(frames), axis=0)
-                frames = np.array([np.squeeze(a, axis=0)
-                                   for a in np.split(frames, frames.shape[0], axis=0)])
-                frames = np.transpose(frames, (0, 3, 1, 2))  # from nwhc to ncwh
-
-                wandb.log({'video': wandb.Video(frames.astype(np.uint8),
-                                                fps=25,
-                                                format='gif',
-                                                caption="Evaluation (last episode)")},
-                          step=timesteps_so_far)
+                record_video(vid_dir, iters_so_far, eval_ep['obs_render'])
 
             # Log stats in dashboard
             wandb.log({"num_workers": np.array(world_size)})

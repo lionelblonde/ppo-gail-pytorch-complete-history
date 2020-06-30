@@ -230,9 +230,11 @@ class PyColabEnv(gym.Env):
             return img
         elif mode == 'human':
             if self.viewer is None:
-                from gym.envs.classic_control.rendering import SimpleImageViewer
-                # NOTE: import exceptionally here because it causes issues on servers
-                self.viewer = SimpleImageViewer()
+                # Import exceptionally here because it causes issues on servers
+                from helpers.opencv_util import OpenCVImageViewer
+                self.viewer = OpenCVImageViewer()
+                # from gym.envs.classic_control.rendering import SimpleImageViewer
+                # self.viewer = SimpleImageViewer()
             self.viewer.imshow(img)
             time.sleep(self.delay / 1e3)
             return self.viewer.isopen

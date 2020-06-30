@@ -99,6 +99,28 @@ if BENCH == 'mujoco':
             'Humanoid': '0-12:00:00',
         }
 
+elif BENCH == 'dmc':
+    TOC = {
+        'debug': ['Hopper-Hop-Feat-v0'],
+        'flareon': ['Hopper-Hop-Feat-v0',
+                    'Walker-Run-Feat-v0']
+    }
+    ENVS = TOC[args.envset]
+
+    if CLUSTER == 'baobab':
+        # Define per-environement partitions map
+        PEP = {
+            'Hopper-Hop-Feat': 'shared-EL7,mono-shared-EL7',
+        }
+        # Define per-environment ntasks map
+        PEC = {
+            'Hopper-Hop-Feat': 8,
+        }
+        # Define per-environment timeouts map
+        PET = {
+            'Hopper-Hop-Feat': '0-06:00:00',
+        }
+
 elif BENCH == 'safety':
     TOC = {
         'debug_nohazards': ['Safexp-PointGoal0-v0'],
@@ -272,6 +294,7 @@ def get_hps(sweep):
             'cuda': CONFIG['parameters']['cuda'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
+            'video_dir': CONFIG['logging']['video_dir'],
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],
@@ -363,6 +386,7 @@ def get_hps(sweep):
             'cuda': CONFIG['parameters']['cuda'],
             'checkpoint_dir': CONFIG['logging']['checkpoint_dir'],
             'log_dir': CONFIG['logging']['log_dir'],
+            'video_dir': CONFIG['logging']['video_dir'],
             'render': False,
             'record': CONFIG['logging'].get('record', False),
             'task': CONFIG['parameters']['task'],

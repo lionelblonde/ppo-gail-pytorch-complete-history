@@ -4,6 +4,7 @@ import safety_gym  # noqa
 from helpers.atari_wrappers import wrap_atari
 
 from helpers.pycolab_envs import make_pycolab
+from helpers.dmc_envs import make_dmc
 
 import environments
 
@@ -21,9 +22,15 @@ def get_benchmark(env_id):
 def make_env(env_id, seed):
     """Create an environment"""
     benchmark = get_benchmark(env_id)
+
     if benchmark == 'pycolab':
         env = make_pycolab(env_id)
         return env
+
+    if benchmark == 'dmc':
+        env = make_dmc(env_id)
+        return env
+
     env = gym.make(env_id)
     env.seed(seed)
     if benchmark in ['mujoco', 'safety']:

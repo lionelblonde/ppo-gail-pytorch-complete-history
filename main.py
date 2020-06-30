@@ -104,6 +104,8 @@ def evaluate(args):
     # Initialize and configure experiment
     experiment = ExperimentInitializer(args)
     experiment.configure_logging()
+    # Create experiment name
+    experiment_name = experiment.get_name()
 
     # Seedify
     torch.manual_seed(args.seed)
@@ -127,11 +129,12 @@ def evaluate(args):
         raise NotImplementedError("algorithm not covered")
 
     # Evaluate
-    orchestrator.evaluate(env=env,
+    orchestrator.evaluate(args=args,
+                          env=env,
                           agent_wrapper=agent_wrapper,
+                          experiment_name=experiment_name,
                           num_trajs=args.num_trajs,
                           iter_num=args.iter_num,
-                          render=args.render,
                           model_path=args.model_path)
 
     # Close environment

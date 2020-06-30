@@ -18,7 +18,7 @@ parameters:
   algo: 'ppo'
   cuda: false
   num_seeds: 4
-  benchmark: 'safety'
+  benchmark: 'dmc'
 
   # Training
   save_frequency: 100

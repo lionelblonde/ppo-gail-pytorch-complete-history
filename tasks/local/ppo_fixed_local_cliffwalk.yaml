@@ -18,7 +18,7 @@ parameters:
   algo: 'ppo'
   cuda: false
   num_seeds: 4
-  benchmark: 'safety'
+  benchmark: 'pycolab'
 
   # Training
   save_frequency: 100
@@ -27,9 +27,9 @@ parameters:
   eval_frequency: 10
 
   # Model
-  perception_stack: 'mlp_256'
+  perception_stack: 'teensy_mini_cnn'
   layer_norm: true
-  shared_value: false
+  shared_value: true
 
   # Optimization
   p_lr: 3.0e-4
@@ -37,9 +37,9 @@ parameters:
   clip_norm: 0.
 
   # Algorithm
-  rollout_len: 2048
-  optim_epochs_per_iter: 10
-  batch_size: 128
+  rollout_len: 256
+  optim_epochs_per_iter: 4
+  batch_size: 64
   gamma: 0.99
   gae_lambda: 0.97
   eps: 0.15

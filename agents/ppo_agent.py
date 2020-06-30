@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
-from helpers.distributed_util import average_gradients, sync_with_root, mpi_mean_like
+from helpers.distributed_util import average_gradients, sync_with_root
 from agents.nets import GaussPolicy, Value, CatPolicy
 from agents.gae import gae
 
@@ -73,6 +73,7 @@ class PPOAgent(object):
 
     def predict(self, ob, sample_or_mode):
         # Create tensor from the state (`require_grad=False` by default)
+
         ob = torch.Tensor(ob[None]).to(self.device)
         # Predict an action
         ac = self.policy.sample(ob) if sample_or_mode else self.policy.mode(ob)

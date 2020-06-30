@@ -32,7 +32,7 @@ class BoxWorldEnv(pycolab_gymify.PyColabEnv):
         ass a fifth action to enable the agent to perform a no-op action, but since only the
         agent move in this environment, there is no use for it. Thus, in accordance to
         the pycolab environment, the action space is defined as `range(4)`.
-        (NOTE: any other action would act as a no-op.)
+        (Note, any other action would act as a no-op.)
 
         `max_iterations` is not needed here (but signature is preserved nonetheless) since the
         pycolab environment already set the episode termination horizon with `max_num_steps`.
@@ -47,7 +47,7 @@ class BoxWorldEnv(pycolab_gymify.PyColabEnv):
                                           resize_scale=16)
 
     def make_game(self):
-        """NOTE: those are the settings from the paper."""
+        """Note, those are the settings from the paper."""
         return box_world.make_game(grid_size=12,
                                    solution_length=(1, 2, 3, 4),
                                    num_forward=(0, 1, 2, 3, 4),
@@ -58,7 +58,7 @@ class BoxWorldEnv(pycolab_gymify.PyColabEnv):
 
     def make_colors(self):
         """Return the color dictionary defined in the pycolab environment.
-        NOTE: need to transform it to RGB format for proper rendering.
+        Note, need to transform it to RGB format for proper rendering.
         """
         color_dict = deepcopy(box_world.OBJECT_COLORS)
         return rgbify_dict(color_dict)

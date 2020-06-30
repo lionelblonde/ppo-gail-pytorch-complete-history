@@ -6,7 +6,6 @@ import torch.nn.utils as U
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch import autograd
-from torch.autograd import Variable
 
 from gym import spaces
 
@@ -532,24 +531,20 @@ class GAILAgent(object):
         """Define the gradient penalty regularizer"""
         if self.hps.grad_pen_type == 'wgan':
             # Assemble interpolated inputs
-            eps_a = p_input_a.clone().detach().data.uniform_()  # default device is input device
-            eps_b = p_input_b.clone().detach().data.uniform_()  # default device is input device
+            eps_a = torch.rand(p_input_a.size(0), 1)
+            eps_b = torch.rand(p_input_b.size(0), 1)
             input_a_i = eps_a * p_input_a + ((1. - eps_a) * e_input_a)
             input_b_i = eps_b * p_input_b + ((1. - eps_b) * e_input_b)
-            # Set `requires_grad=True` to later have access to
-            # gradients w.r.t. the inputs (not populated by default)
-            input_a_i = Variable(input_a_i, requires_grad=True)
-            input_b_i = Variable(input_b_i, requires_grad=True)
+            input_a_i.requires_grad = True
+            input_b_i.requires_grad = True
         elif self.hps.grad_pen_type == 'dragan':
             # Assemble interpolated inputs
-            eps_a = p_input_a.clone().detach().data.normal_(0, 10)  # default device is input device
-            eps_b = p_input_b.clone().detach().data.normal_(0, 10)  # default device is input device
+            eps_a = p_input_a.clone().detach().data.normal_(0, 10)
+            eps_b = p_input_b.clone().detach().data.normal_(0, 10)
             input_a_i = e_input_a + eps_a
             input_b_i = e_input_b + eps_b
-            # Set `requires_grad=True` to later have access to
-            # gradients w.r.t. the inputs (not populated by default)
-            input_a_i = Variable(input_a_i, requires_grad=True)
-            input_b_i = Variable(input_b_i, requires_grad=True)
+            input_a_i.requires_grad = True
+            input_b_i.requires_grad = True
         else:
             raise NotImplementedError("invalid gradient penalty type")
         # Create the operation of interest
