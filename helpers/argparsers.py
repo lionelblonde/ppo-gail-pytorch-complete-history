@@ -26,8 +26,6 @@ def argparser(description="PPO/GAIL Experiment"):
     parser.add_argument('--algo', type=str, choices=['ppo', 'gail'], default=None)
 
     # Training
-    parser.add_argument('--save_frequency', help='save model every xx iterations',
-                        type=int, default=100)
     parser.add_argument('--num_timesteps', help='total number of interactions',
                         type=int, default=int(2e7))
     parser.add_argument('--eval_steps_per_iter', type=int, default=10)

@@ -21,7 +21,6 @@ parameters:
   benchmark: 'mujoco'
 
   # Training
-  save_frequency: 1000
   num_timesteps: 1e7
   eval_steps_per_iter: 10
   eval_frequency: 10

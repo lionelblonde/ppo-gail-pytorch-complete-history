@@ -58,6 +58,7 @@ class PPOAgent(object):
             else:
                 return 1.0
 
+        # Set up lr scheduler
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.p_optimizer, _lr)
 
         log_module_info(logger, 'policy', self.policy)

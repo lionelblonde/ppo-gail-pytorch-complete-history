@@ -20,7 +20,6 @@ parameters:
   benchmark: 'safety'
 
   # Training
-  save_frequency: 100
   num_timesteps: 1e7
   eval_steps_per_iter: 10
   eval_frequency: 10
@@ -32,8 +31,8 @@ parameters:
 
   # Optimization
   p_lr: 3.0e-4
-  with_scheduler: true
-  clip_norm: 0.
+  with_scheduler: false
+  clip_norm: 0.5
 
   # Algorithm
   rollout_len: 2048

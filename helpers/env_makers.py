@@ -1,10 +1,11 @@
+import os
+
 import gym
 import safety_gym  # noqa
 
+from helper import logger
 from helpers.atari_wrappers import wrap_atari
 
-from helpers.pycolab_envs import make_pycolab
-from helpers.dmc_envs import make_dmc
 
 import environments
 
@@ -24,17 +25,38 @@ def make_env(env_id, seed):
     benchmark = get_benchmark(env_id)
 
     if benchmark == 'pycolab':
+        from helpers.pycolab_envs import make_pycolab  # noqa
         env = make_pycolab(env_id)
         return env
 
     if benchmark == 'dmc':
+        # Import here to avoid glew issues altogether if not using anyway
+        from helpers.dmc_envs import make_dmc  # noqa
         env = make_dmc(env_id)
         return env
 
+    if benchmark == 'mujoco':
+        # Remove the lockfile if it exists
+        lockfile = os.path.join(
+            os.environ['CONDA_PREFIX'],
+            "lib",
+            "python3.7",
+            "site-packages",
+            "mujoco_py",
+            "generated",
+            "mujocopy-buildlock.lock",
+        )
+        try:
+            os.remove(lockfile)
+            logger.info("[WARN] removed mujoco lockfile")
+        except OSError:
+            pass
+
     env = gym.make(env_id)
     env.seed(seed)
+
     if benchmark in ['mujoco', 'safety']:
-        pass
+        pass  # weird, but struct kept general if adding other envs
     elif benchmark == 'atari':
         env = wrap_atari(env)
     else:

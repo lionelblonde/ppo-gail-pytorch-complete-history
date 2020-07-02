@@ -17,31 +17,30 @@ parameters:
   algo: 'ppo'
   cuda: false
   num_seeds: 5
-  benchmark: 'safety'
+  benchmark: 'mujoco'
 
   # Training
-  save_frequency: 100
   num_timesteps: 1e7
   eval_steps_per_iter: 10
   eval_frequency: 10
 
   # Model
-  perception_stack: 'mlp_100'
+  perception_stack: 'mlp_64'
   layer_norm: true
   shared_value: true
 
   # Optimization
   p_lr: 3.0e-4
-  with_scheduler: true
-  clip_norm: 0.
+  with_scheduler: false
+  clip_norm: 0.5
 
   # Algorithm
   rollout_len: 2048
   optim_epochs_per_iter: 10
-  batch_size: 128
+  batch_size: 32
   gamma: 0.99
-  gae_lambda: 0.95
-  eps: 0.15
+  gae_lambda: 0.97
+  eps: 0.2
   baseline_scale: 0.5
   p_ent_reg_scale: 0.
 

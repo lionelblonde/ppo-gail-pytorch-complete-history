@@ -114,11 +114,11 @@ elif BENCH == 'dmc':
         }
         # Define per-environment ntasks map
         PEC = {
-            'Hopper-Hop-Feat': 8,
+            'Hopper-Hop-Feat': 32,
         }
         # Define per-environment timeouts map
         PET = {
-            'Hopper-Hop-Feat': '0-06:00:00',
+            'Hopper-Hop-Feat': '0-12:00:00',
         }
 
 elif BENCH == 'safety':
@@ -212,6 +212,7 @@ elif BENCH == 'atari':
     else:
         ENVS = TOC[args.envset]
     ENVS = ["{}NoFrameskip-v4".format(name) for name in ENVS]
+
 elif BENCH == 'pycolab':
     TOC = {
         'box_world': ['BoxWorld-v0'],
@@ -239,7 +240,7 @@ elif BENCH == 'pycolab':
 else:
     raise NotImplementedError("benchmark not covered by the spawner.")
 
-# If needed, create the list of demonstrations needed
+# If needed, create the list of demonstrations
 if NEED_DEMOS:
     demo_dir = os.environ['DEMO_DIR']
     DEMOS = {k: osp.join(demo_dir, k) for k in ENVS}
@@ -250,15 +251,26 @@ def copy_and_add_seed(hpmap, seed):
     # Add the seed and edit the job uuid to only differ by the seed
     hpmap_.update({'seed': seed})
     # Enrich the uuid with extra information
+    try:
+        out = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'])
+        gitsha = "gitSHA_{}".format(out.strip().decode('ascii'))
+    except OSError:
+        pass
     if NEED_DEMOS:
-        hpmap_.update({'uuid': "{}.{}.demos{}.seed{}".format(hpmap['uuid'],
-                                                             hpmap['env_id'],
-                                                             str(hpmap['num_demos']).zfill(3),
-                                                             str(seed).zfill(2))})
+        hpmap_.update({'uuid': "{}.{}.{}.demos{}.seed{}".format(
+            hpmap['uuid'],
+            gitsha,
+            hpmap['env_id'],
+            str(hpmap['num_demos']).zfill(3),
+            str(seed).zfill(2))}
+        )
     else:
-        hpmap_.update({'uuid': "{}.{}.seed{}".format(hpmap['uuid'],
-                                                     hpmap['env_id'],
-                                                     str(seed).zfill(2))})
+        hpmap_.update({'uuid': "{}.{}.{}.seed{}".format(
+            hpmap['uuid'],
+            gitsha,
+            hpmap['env_id'],
+            str(seed).zfill(2))}
+        )
     return hpmap_
 
 
@@ -301,7 +313,6 @@ def get_hps(sweep):
             'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
@@ -393,7 +404,6 @@ def get_hps(sweep):
             'algo': CONFIG['parameters']['algo'],
 
             # Training
-            'save_frequency': CONFIG['parameters'].get('save_frequency', 400),
             'num_timesteps': int(float(CONFIG['parameters'].get('num_timesteps', 2e7))),
             'eval_steps_per_iter': CONFIG['parameters'].get('eval_steps_per_iter', 10),
             'eval_frequency': CONFIG['parameters'].get('eval_frequency', 10),
@@ -528,6 +538,8 @@ def create_job_str(name, command, envkey):
         bash_script_str += ('\n')
         # Load modules
         bash_script_str += ('module load GCC/8.3.0 OpenMPI/3.1.4\n')
+        if BENCH == 'dmc':
+            bash_script_str += ('module load Mesa/19.2.1\n')
         if CONFIG['parameters']['cuda']:
             bash_script_str += ('module load CUDA\n')
         bash_script_str += ('\n')

@@ -3,8 +3,7 @@ name: 'training spawner with single fixed hp set'
 resources:
   conda_env: 'pytorch'
   wandb_project: 'jolteon'
-  num_workers: 4
-  cluster: 'local'
+  cluster: 'baobab'
 
 logging:
   checkpoint_dir: 'data/checkpoints'
@@ -17,8 +16,8 @@ parameters:
   task: 'train'
   algo: 'ppo'
   cuda: false
-  num_seeds: 4
-  benchmark: 'pycolab'
+  num_seeds: 5
+  benchmark: 'dmc'
 
   # Training
   num_timesteps: 1e7
@@ -26,9 +25,9 @@ parameters:
   eval_frequency: 10
 
   # Model
-  perception_stack: 'teensy_mini_cnn'
+  perception_stack: 'mlp_64'
   layer_norm: true
-  shared_value: false
+  shared_value: true
 
   # Optimization
   p_lr: 3.0e-4
@@ -36,9 +35,9 @@ parameters:
   clip_norm: 0.5
 
   # Algorithm
-  rollout_len: 256
-  optim_epochs_per_iter: 4
-  batch_size: 64
+  rollout_len: 2048
+  optim_epochs_per_iter: 10
+  batch_size: 32
   gamma: 0.99
   gae_lambda: 0.97
   eps: 0.2
@@ -49,3 +48,4 @@ parameters:
   rnd_batch_norm: true
   rnd_lr: 5.0e-4
   proportion_of_exp_per_rnd_update: 1.
+

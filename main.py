@@ -1,3 +1,4 @@
+import os
 import random
 
 from mpi4py import MPI
@@ -32,12 +33,14 @@ def train(args):
     experiment_name = experiment.get_name()
 
     # Set device-related knobs
-    if args.cuda and torch.cuda.is_available():
+    if args.cuda:
+        assert torch.cuda.is_available()
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
         device = torch.device("cuda:0")
         setup_mpi_gpus()
     else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""  # kill any possibility of usage
         device = torch.device("cpu")
     logger.info("device in use: {}".format(device))
 
@@ -52,12 +55,14 @@ def train(args):
     # Create environment
     env = make_env(args.env_id, worker_seed)
 
-    expert_dataset = None
-
     # Create an agent wrapper
     if args.algo == 'ppo':
         def agent_wrapper():
-            return PPOAgent(env=env, device=device, hps=args)
+            return PPOAgent(
+                env=env,
+                device=device,
+                hps=args,
+            )
 
     elif args.algo == 'gail':
         # Create the expert demonstrations dataset from expert trajectories
@@ -69,8 +74,12 @@ def train(args):
         )
 
         def agent_wrapper():
-            return GAILAgent(env=env, device=device, hps=args,
-                             expert_dataset=expert_dataset)
+            return GAILAgent(
+                env=env,
+                device=device,
+                hps=args,
+                expert_dataset=expert_dataset,
+            )
 
     else:
         raise NotImplementedError("algorithm not covered")
@@ -81,13 +90,15 @@ def train(args):
         eval_env = make_env(args.env_id, eval_seed)
 
     # Train
-    orchestrator.learn(args=args,
-                       rank=rank,
-                       world_size=world_size,
-                       env=env,
-                       eval_env=eval_env,
-                       agent_wrapper=agent_wrapper,
-                       experiment_name=experiment_name)
+    orchestrator.learn(
+        args=args,
+        rank=rank,
+        world_size=world_size,
+        env=env,
+        eval_env=eval_env,
+        agent_wrapper=agent_wrapper,
+        experiment_name=experiment_name,
+    )
 
     # Close environment
     env.close()
@@ -119,23 +130,31 @@ def evaluate(args):
     # Create an agent wrapper
     if args.algo == 'ppo':
         def agent_wrapper():
-            return PPOAgent(env=env, device='cpu', hps=args)
+            return PPOAgent(
+                env=env,
+                device='cpu',
+                hps=args,
+            )
 
     elif args.algo == 'gail':
         def agent_wrapper():
-            return GAILAgent(env=env, device='cpu', hps=args)
+            return GAILAgent(
+                env=env,
+                device='cpu',
+                hps=args,
+                expert_dataset=None,
+            )
 
     else:
         raise NotImplementedError("algorithm not covered")
 
     # Evaluate
-    orchestrator.evaluate(args=args,
-                          env=env,
-                          agent_wrapper=agent_wrapper,
-                          experiment_name=experiment_name,
-                          num_trajs=args.num_trajs,
-                          iter_num=args.iter_num,
-                          model_path=args.model_path)
+    orchestrator.evaluate(
+        args=args,
+        env=env,
+        agent_wrapper=agent_wrapper,
+        experiment_name=experiment_name,
+    )
 
     # Close environment
     env.close()

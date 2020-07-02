@@ -1,8 +1,10 @@
 import time
 from copy import deepcopy
+import sys
 import os
 import os.path as osp
 from collections import defaultdict, deque
+import signal
 
 import wandb
 import numpy as np
@@ -405,13 +407,11 @@ def ep_generator(env, agent, render, record):
 def evaluate(args,
              env,
              agent_wrapper,
-             experiment_name,
-             num_trajs,
-             iter_num,
-             model_path):
+             experiment_name):
 
     # Create an agent
     agent = agent_wrapper()
+
     # Create episode generator
     ep_gen = ep_generator(env, agent, args.render, args.record)
 
@@ -420,15 +420,15 @@ def evaluate(args,
         os.makedirs(vid_dir, exist_ok=True)
 
     # Load the model
-    agent.load(model_path, iter_num)
-    logger.info("model loaded from path:\n  {}".format(model_path))
+    agent.load(args.model_path, args.iter_num)
+    logger.info("model loaded from path:\n  {}".format(args.model_path))
 
     # Initialize the history data structures
     ep_lens = []
     ep_env_rets = []
     # Collect trajectories
-    for i in range(num_trajs):
-        logger.info("evaluating [{}/{}]".format(i + 1, num_trajs))
+    for i in range(args.num_trajs):
+        logger.info("evaluating [{}/{}]".format(i + 1, args.num_trajs))
         traj = ep_gen.__next__()
         ep_len, ep_env_ret = traj['ep_len'], traj['ep_env_ret']
         # Aggregate to the history data structures
@@ -480,19 +480,36 @@ def learn(args,
     if rank == 0:
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
+        # Save the model as a dry run, to avoid bad surprises at the end
+        agent.save(ckpt_dir, iters_so_far)
+        logger.info("dry run. Saving model @: {}".format(ckpt_dir))
         if args.record:
             vid_dir = osp.join(args.video_dir, experiment_name)
             os.makedirs(vid_dir, exist_ok=True)
 
-    # Setup wandb
+        # Handle timeout signal gracefully
+        def timeout(signum, frame):
+            # Save the model
+            agent.save(ckpt_dir, iters_so_far)
+            logger.info("timeout rang. Saving model @: {}".format(ckpt_dir))
+            # End the run
+            logger.info("bye.")
+            sys.exit(0)
+
+        # Tie the timeout handler with the termination signal
+        signal.signal(signal.SIGTERM, timeout)
+
+    # Set up wandb
     if rank == 0:
         while True:
             try:
-                wandb.init(project=args.wandb_project,
-                           name=experiment_name,
-                           group='.'.join(experiment_name.split('.')[:-2]),
-                           job_type=experiment_name.split('.')[-2],
-                           config=args.__dict__)
+                wandb.init(
+                    project=args.wandb_project,
+                    name=experiment_name,
+                    group='.'.join(experiment_name.split('.')[:-2]),
+                    job_type=experiment_name.split('.')[-2],
+                    config=args.__dict__,
+                )
             except ConnectionRefusedError:
                 pause = 5
                 logger.info("wandb co error. Retrying in {} secs.".format(pause))
@@ -523,12 +540,8 @@ def learn(args,
         #     if agent.hps.algo == 'gail':
         #         sync_check(agent.discriminator)
 
-        if rank == 0 and iters_so_far % args.save_frequency == 0:
-            # Save the model
-            agent.save(ckpt_dir, iters_so_far)
-            logger.info("saving model @: {}".format(ckpt_dir))
-
         if args.algo == 'ppo':
+
             with timed('interacting'):
                 rollout = roll_gen.__next__()
                 # d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
@@ -549,10 +562,9 @@ def learn(args,
                 d['val_losses'].append(metrics['v_loss'])
 
         elif args.algo == 'gail':
-            for _ in range(agent.hps.g_steps):
 
+            for _ in range(agent.hps.g_steps):
                 with timed('interacting'):
-                    # Unpack (one rollout dict for policy training, one for reward training)
                     rollout = roll_gen.__next__()
                     # d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
                     # roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
@@ -642,7 +654,8 @@ def learn(args,
                        'val_loss': np.mean(d['val_losses']),
                        'lrnow': np.array(lrnow)},
                       step=timesteps_so_far)
-            if agent.hps.algo == 'gail':
+
+            if args.algo == 'gail':
                 wandb.log({'dis_loss': np.mean(d['dis_losses'])},
                           step=timesteps_so_far)
                 if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
@@ -661,3 +674,8 @@ def learn(args,
 
         # Clear the iteration's running stats
         d.clear()
+
+    if rank == 0:
+        # Save once we are done iterating
+        agent.save(ckpt_dir, iters_so_far)
+        logger.info("We're done. Saving model @: {}".format(ckpt_dir))
