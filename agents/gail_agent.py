@@ -412,7 +412,7 @@ class GAILAgent(object):
 
             if self.hps.rnd_explo:
                 # In accordance with RND's pseudo-code, train as many times as the policy
-                self.rnd.update(dataloader)  # ignore returned var
+                self.rnd.update(dataloader)  # ignore returned metrics
 
             if self.hps.reward_type == 'gail_kye_mod':
                 self.kye.update(dataloader, self.discriminator.D)  # ignore returned var

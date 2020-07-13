@@ -19,6 +19,12 @@ from agents.gail_agent import GAILAgent
 def train(args):
     """Train an agent"""
 
+    # Make the paths absolute
+    args.root = os.path.dirname(os.path.abspath(__file__))
+    for k in ['checkpoints', 'logs', 'videos']:
+        new_k = "{}_dir".format(k[:-1])
+        vars(args)[new_k] = os.path.join(args.root, 'data', k)
+
     # Get the current process rank
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()

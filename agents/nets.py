@@ -690,7 +690,6 @@ class Value(nn.Module):
     def forward(self, ob):
         ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
         x = self.perception_stack(ob)
-        x = self.perception_stack(ob)
         value = self.v_head(self.v_fc_stack(x))
         return value
 
