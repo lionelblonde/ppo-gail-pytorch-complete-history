@@ -45,4 +45,3 @@ parameters:
   rnd_batch_norm: true
   rnd_lr: 5.0e-4
   proportion_of_exp_per_rnd_update: 1.
-

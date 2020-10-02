@@ -99,5 +99,5 @@ class ExperimentInitializer:
             name += "{}.".format(self.args.task)
             name += "num_trajs_{}.".format(self.args.num_trajs)
         name += self.args.env_id
-        name += ".seed_{}".format(str(self.args.seed).zfill(2))
+        name += ".seed{}".format(str(self.args.seed).zfill(2))
         return name

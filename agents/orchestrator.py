@@ -447,7 +447,6 @@ def evaluate(args,
 
 def learn(args,
           rank,
-          world_size,
           env,
           eval_env,
           agent_wrapper,
@@ -469,10 +468,8 @@ def learn(args,
 
     # Create collections
     d = defaultdict(list)
-    # b_roll_ret = deque(maxlen=10)
     b_eval_ret = deque(maxlen=10)
     if benchmark == 'safety':
-        # b_roll_cost = deque(maxlen=10)
         b_eval_cost = deque(maxlen=10)
 
     if rank == 0:
@@ -499,8 +496,8 @@ def learn(args,
         signal.signal(signal.SIGTERM, timeout)
 
         # Group by everything except the seed, which is last, hence index -1
-        # For 'sam-dac', it groups by uuid + gitSHA + env_id + num_demos,
-        # while for 'ddpg-td3', it groups by uuid + gitSHA + env_id
+        # For 'gail', it groups by uuid + gitSHA + env_id + num_demos,
+        # while for 'ppo', it groups by uuid + gitSHA + env_id
         group = '.'.join(experiment_name.split('.')[:-1])
 
         # Set up wandb
@@ -548,53 +545,43 @@ def learn(args,
 
             with timed('interacting'):
                 rollout = roll_gen.__next__()
-                # d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
-                # roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
-                # d['roll_env_ret'].append(roll_env_ret)
-                # b_roll_ret.append(roll_env_ret)
-                # if benchmark == 'safety':
-                #     roll_env_cost = mpi_mean_reduce(rollout['ep_env_costs'])
-                #     d['roll_env_cost'].append(roll_env_cost)
-                #     b_roll_cost.append(roll_env_cost)
 
             with timed('training'):
                 metrics, lrnow = agent.update_policy_value(
                     rollout=rollout,
                     iters_so_far=iters_so_far,
                 )
-                d['pol_losses'].append(metrics['p_loss'])
-                d['val_losses'].append(metrics['v_loss'])
+                if iters_so_far % args.eval_frequency == 0:
+                    # Log training stats
+                    d['pol_losses'].append(metrics['p_loss'])
+                    d['val_losses'].append(metrics['v_loss'])
 
         elif args.algo == 'gail':
 
             for _ in range(agent.hps.g_steps):
                 with timed('interacting'):
                     rollout = roll_gen.__next__()
-                    # d['roll_len'].append(mpi_mean_reduce(rollout['ep_lens']))
-                    # roll_env_ret = mpi_mean_reduce(rollout['ep_env_rets'])
-                    # d['roll_env_ret'].append(roll_env_ret)
-                    # b_roll_ret.append(roll_env_ret)
-                    # if benchmark == 'safety':
-                    #     roll_env_cost = mpi_mean_reduce(rollout['ep_env_costs'])
-                    #     d['roll_env_cost'].append(roll_env_cost)
-                    #     b_roll_cost.append(roll_env_cost)
 
                 with timed('policy and value training'):
                     metrics, lrnow = agent.update_policy_value(
                         rollout=rollout,
                         iters_so_far=iters_so_far,
                     )
-                    d['pol_losses'].append(metrics['p_loss'])
-                    d['val_losses'].append(metrics['v_loss'])
-                    if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                        d['cos_sims_p'].append(metrics['cos_sim'])
+                    if iters_so_far % args.eval_frequency == 0:
+                        # Log training stats
+                        d['pol_losses'].append(metrics['p_loss'])
+                        d['val_losses'].append(metrics['v_loss'])
+                        if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
+                            d['cos_sims_p'].append(metrics['cos_sim'])
 
             for _ in range(agent.hps.d_steps):
                 with timed('discriminator training'):
                     metrics = agent.update_discriminator(
                         rollout=rollout,
                     )
-                    d['dis_losses'].append(metrics['d_loss'])
+                    if iters_so_far % args.eval_frequency == 0:
+                        # Log training stats
+                        d['dis_losses'].append(metrics['d_loss'])
 
         if eval_env is not None:
             assert rank == 0, "non-zero rank mpi worker forbidden here"
@@ -622,38 +609,26 @@ def learn(args,
         elif args.algo == 'gail':
             timesteps_so_far += (agent.hps.g_steps * args.rollout_len)
 
-        if rank == 0:
+        if rank == 0 and (iters_so_far - 1) % args.eval_frequency == 0:
 
             # Log stats in csv
-            if (iters_so_far - 1) % args.eval_frequency == 0:
-                logger.record_tabular('timestep', timesteps_so_far)
-                logger.record_tabular('eval_len', np.mean(d['eval_len']))
-                logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-                logger.record_tabular('avg_eval_env_ret', np.mean(b_eval_ret))
-                if benchmark == 'safety':
-                    logger.record_tabular('eval_env_cost', np.mean(d['eval_env_cost']))
-                    logger.record_tabular('avg_eval_env_cost', np.mean(b_eval_cost))
-                if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
-                    logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
-                logger.info("dumping stats in .csv file")
-                logger.dump_tabular()
+            logger.record_tabular('timestep', timesteps_so_far)
+            logger.record_tabular('eval_len', np.mean(d['eval_len']))
+            logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
+            logger.record_tabular('avg_eval_env_ret', np.mean(b_eval_ret))
+            if benchmark == 'safety':
+                logger.record_tabular('eval_env_cost', np.mean(d['eval_env_cost']))
+                logger.record_tabular('avg_eval_env_cost', np.mean(b_eval_cost))
+            if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
+                logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
+            logger.info("dumping stats in .csv file")
+            logger.dump_tabular()
 
-            if ((iters_so_far - 1) % args.eval_frequency == 0) and args.record:
+            if args.record:
                 # Record the last episode in a video
                 record_video(vid_dir, iters_so_far, eval_ep['obs_render'])
 
             # Log stats in dashboard
-            wandb.log({"num_workers": np.array(world_size)})
-
-            # wandb.log({'roll_len': np.mean(d['roll_len']),
-            #            'roll_env_ret': np.mean(d['roll_env_ret']),
-            #            'avg_roll_env_ret': np.mean(b_roll_ret)},
-            #           step=timesteps_so_far)
-            # if benchmark == 'safety':
-            #     wandb.log({'roll_env_cost': np.mean(d['roll_env_cost']),
-            #                'avg_roll_env_cost': np.mean(b_roll_cost)},
-            #               step=timesteps_so_far)
-
             wandb.log({'pol_loss': np.mean(d['pol_losses']),
                        'val_loss': np.mean(d['val_losses']),
                        'lrnow': np.array(lrnow)},
@@ -666,15 +641,14 @@ def learn(args,
                     wandb.log({'cos_sim_p': np.mean(d['cos_sims_p'])},
                               step=timesteps_so_far)
 
-            if (iters_so_far - 1) % args.eval_frequency == 0:
-                wandb.log({'eval_len': np.mean(d['eval_len']),
-                           'eval_env_ret': np.mean(d['eval_env_ret']),
-                           'avg_eval_env_ret': np.mean(b_eval_ret)},
+            wandb.log({'eval_len': np.mean(d['eval_len']),
+                       'eval_env_ret': np.mean(d['eval_env_ret']),
+                       'avg_eval_env_ret': np.mean(b_eval_ret)},
+                      step=timesteps_so_far)
+            if benchmark == 'safety':
+                wandb.log({'eval_env_cost': np.mean(d['eval_env_cost']),
+                           'avg_eval_env_cost': np.mean(b_eval_cost)},
                           step=timesteps_so_far)
-                if benchmark == 'safety':
-                    wandb.log({'eval_env_cost': np.mean(d['eval_env_cost']),
-                               'avg_eval_env_cost': np.mean(b_eval_cost)},
-                              step=timesteps_so_far)
 
         # Clear the iteration's running stats
         d.clear()
