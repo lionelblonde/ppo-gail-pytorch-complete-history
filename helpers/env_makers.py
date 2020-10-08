@@ -3,7 +3,7 @@ import os
 import gym
 import safety_gym  # noqa
 
-from helper import logger
+from helpers import logger
 from helpers.atari_wrappers import wrap_atari
 
 

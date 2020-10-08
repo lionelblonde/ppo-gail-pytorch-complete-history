@@ -9,6 +9,10 @@ import torch.nn.utils as U
 from helpers.distributed_util import RunMoms
 
 
+STANDARDIZED_OB_CLAMPS = [-5., 5.]
+RELU_LEAK = 0.1
+
+
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Core.
 
 def nhwc_to_nchw(x):
@@ -213,7 +217,7 @@ class ShallowMLP(nn.Module):
             ]))),
         ]))
         # Perform initialization
-        self.fc_stack.apply(init(weight_scale=5./3.))
+        self.fc_stack.apply(init(weight_scale=5. / 3.))
 
     def forward(self, x):
         x = self.fc_stack(x)
@@ -247,8 +251,6 @@ class TeensyMiniCNN(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
-        # Normalize the observations
-        x /= 255.
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
@@ -292,8 +294,6 @@ class TeenyTinyCNN(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
-        # Normalize the observations
-        x /= 255.
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
@@ -344,8 +344,6 @@ class NatureCNN(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
-        # Normalize the observations
-        x /= 255.
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
@@ -393,8 +391,6 @@ class SmallImpalaCNN(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
-        # Normalize the observations
-        x /= 255.
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
@@ -438,8 +434,6 @@ class LargeImpalaCNN(nn.Module):
         self.fc_stack.apply(init(weight_scale=math.sqrt(2)))
 
     def forward(self, x):
-        # Normalize the observations
-        x /= 255.
         # Swap from NHWC to NCHW
         x = nhwc_to_nchw(x)
         # Stack the convolutional layers
@@ -478,8 +472,9 @@ class GaussPolicy(nn.Module):
         super(GaussPolicy, self).__init__()
         ac_dim = env.action_space.shape[0]
         self.hps = hps
-        # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        if not self.hps.visual:
+            # Define observation whitening
+            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(self.hps.perception_stack)
         self.perception_stack = net_lambda(env, self.hps)
@@ -513,13 +508,13 @@ class GaussPolicy(nn.Module):
             self.r_skip_co = nn.Sequential()
             self.r_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.p_fc_stack.apply(init(weight_scale=5./3.))
+        self.p_fc_stack.apply(init(weight_scale=5. / 3.))
         self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
-            self.v_fc_stack.apply(init(weight_scale=5./3.))
+            self.v_fc_stack.apply(init(weight_scale=5. / 3.))
             self.v_head.apply(init(weight_scale=0.01))
         if self.hps.kye_p:
-            self.r_fc_stack.apply(init(weight_scale=5./3.))
+            self.r_fc_stack.apply(init(weight_scale=5. / 3.))
             self.r_head.apply(init(weight_scale=0.01))
 
     def logp(self, ob, ac):
@@ -566,7 +561,10 @@ class GaussPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        if self.hps.visual:
+            ob /= 255.
+        else:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.perception_stack(ob)
         ac_mean = self.p_head(self.p_fc_stack(x))
         ac_std = self.ac_logstd_head.expand_as(ac_mean).exp()
@@ -586,8 +584,9 @@ class CatPolicy(nn.Module):
         super(CatPolicy, self).__init__()
         ac_dim = env.action_space.n
         self.hps = hps
-        # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        if not self.hps.visual:
+            # Define observation whitening
+            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
         self.perception_stack = net_lambda(env, hps)
@@ -611,10 +610,10 @@ class CatPolicy(nn.Module):
             ]))
             self.v_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.p_fc_stack.apply(init(weight_scale=5./3.))
+        self.p_fc_stack.apply(init(weight_scale=5. / 3.))
         self.p_head.apply(init(weight_scale=0.01))
         if self.hps.shared_value:
-            self.v_fc_stack.apply(init(weight_scale=5./3.))
+            self.v_fc_stack.apply(init(weight_scale=5. / 3.))
             self.v_head.apply(init(weight_scale=0.01))
 
     def logp(self, ob, ac):
@@ -655,7 +654,10 @@ class CatPolicy(nn.Module):
             raise ValueError("should not be called")
 
     def forward(self, ob):
-        # ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)  # FIXME hp
+        if self.hps.visual:
+            ob /= 255.
+        else:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.perception_stack(ob)
         ac_logits = self.p_head(self.p_fc_stack(x))
         out = [ac_logits]
@@ -669,26 +671,31 @@ class Value(nn.Module):
 
     def __init__(self, env, hps):
         super(Value, self).__init__()
-        # Define observation whitening
-        self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+        self.hps = hps
+        if not self.hps.visual:
+            # Define observation whitening
+            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define perception stack
-        net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
-        self.perception_stack = net_lambda(env, hps)
+        net_lambda, fc_in = perception_stack_parser(self.hps.perception_stack)
+        self.perception_stack = net_lambda(env, self.hps)
         # Assemble the last layers and output heads
         self.v_fc_stack = nn.Sequential(OrderedDict([
             ('fc_block', nn.Sequential(OrderedDict([
                 ('fc', nn.Linear(fc_in, fc_in)),
-                ('ln', (nn.LayerNorm if hps.layer_norm else nn.Identity)(fc_in)),
+                ('ln', (nn.LayerNorm if self.hps.layer_norm else nn.Identity)(fc_in)),
                 ('nl', nn.Tanh()),
             ]))),
         ]))
         self.v_head = nn.Linear(fc_in, 1)
         # Perform initialization
-        self.v_fc_stack.apply(init(weight_scale=5./3.))
+        self.v_fc_stack.apply(init(weight_scale=5. / 3.))
         self.v_head.apply(init(weight_scale=0.01))
 
     def forward(self, ob):
-        ob = torch.clamp(self.rms_obs.standardize(ob), -5., 5.)
+        if self.hps.visual:
+            ob /= 255.
+        else:
+            ob = self.rms_obs.standardize(ob).clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.perception_stack(ob)
         value = self.v_head(self.v_fc_stack(x))
         return value
@@ -698,15 +705,17 @@ class Discriminator(nn.Module):
 
     def __init__(self, env, hps):
         super(Discriminator, self).__init__()
+        self.hps = hps
+        self.leak = RELU_LEAK
+        assert not (self.hps.d_batch_norm and self.hps.visual), "can't use batch norm with visual input"
+        assert not (self.hps.wrap_absorb and self.hps.visual), "can't use wrap absorb with visual input"
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
-        if hps.wrap_absorb:
+        if self.hps.wrap_absorb:
             ob_dim += 1
             ac_dim += 1
-        self.hps = hps
-        self.leak = 0.1
         apply_sn = snwrap(use_sn=self.hps.spectral_norm)
-        if self.hps.d_batch_norm:
+        if self.hps.d_batch_norm and not self.hps.visual:
             # Define observation whitening
             self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
         # Define the input dimension
@@ -736,28 +745,33 @@ class Discriminator(nn.Module):
         return out[0]  # score
 
     def forward(self, input_a, input_b):
-        if self.hps.d_batch_norm:
-            # Apply normalization
-            if self.hps.wrap_absorb:
-                # Normalize state
-                input_a_ = input_a.clone()[:, 0:-1]
-                input_a_ = torch.clamp(self.rms_obs.standardize(input_a_), -5., 5.)
-                input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
-                if self.hps.state_only:
-                    # Normalize next state
-                    input_b_ = input_b.clone()[:, 0:-1]
-                    input_b_ = torch.clamp(self.rms_obs.standardize(input_b_), -5., 5.)
-                    input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
-            else:
-                # Normalize state
-                input_a = torch.clamp(self.rms_obs.standardize(input_a), -5., 5.)
-                if self.hps.state_only:
-                    # Normalize next state
-                    input_b = torch.clamp(self.rms_obs.standardize(input_b), -5., 5.)
-        else:
-            input_a = torch.clamp(input_a, -5., 5.)
+        if self.hps.visual:
+            input_a /= 255.
             if self.hps.state_only:
-                input_b = torch.clamp(input_b, -5., 5.)
+                input_b /= 255.
+        else:
+            if self.hps.d_batch_norm:
+                # Apply normalization
+                if self.hps.wrap_absorb:
+                    # Normalize state
+                    input_a_ = input_a.clone()[:, 0:-1]
+                    input_a_ = self.rms_obs.standardize(input_a_).clamp(*STANDARDIZED_OB_CLAMPS)
+                    input_a = torch.cat([input_a_, input_a[:, -1].unsqueeze(-1)], dim=-1)
+                    if self.hps.state_only:
+                        # Normalize next state
+                        input_b_ = input_b.clone()[:, 0:-1]
+                        input_b_ = self.rms_obs.standardize(input_b_).clamp(*STANDARDIZED_OB_CLAMPS)
+                        input_b = torch.cat([input_b_, input_b[:, -1].unsqueeze(-1)], dim=-1)
+                else:
+                    # Normalize state
+                    input_a = self.rms_obs.standardize(input_a).clamp(*STANDARDIZED_OB_CLAMPS)
+                    if self.hps.state_only:
+                        # Normalize next state
+                        input_b = self.rms_obs.standardize(input_b).clamp(*STANDARDIZED_OB_CLAMPS)
+            else:
+                input_a = input_a.clamp(*STANDARDIZED_OB_CLAMPS)
+                if self.hps.state_only:
+                    input_b = input_b.clamp(*STANDARDIZED_OB_CLAMPS)
         # Concatenate
         x = torch.cat([input_a, input_b], dim=-1)
         x = self.fc_stack(x)

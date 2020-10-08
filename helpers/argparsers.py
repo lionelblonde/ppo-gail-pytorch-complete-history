@@ -36,7 +36,7 @@ def argparser(description="PPO/GAIL Experiment"):
     # Optimization
     parser.add_argument('--p_lr', type=float, default=3e-4)
     parser.add_argument('--v_lr', type=float, default=1e-3)
-    boolean_flag(parser, 'with_scheduler', default=False)
+    parser.add_argument('--lr_schedule', type=str, choices=['constant', 'linear'], default='constant')
     parser.add_argument('--clip_norm', type=float, default=None)
 
     # Algorithm

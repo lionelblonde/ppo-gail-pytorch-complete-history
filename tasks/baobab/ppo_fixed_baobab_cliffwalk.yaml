@@ -28,7 +28,7 @@ parameters:
 
   # Optimization
   p_lr: 3.0e-4
-  with_scheduler: false
+  lr_schedule: 'linear'
   clip_norm: 0.5
 
   # Algorithm

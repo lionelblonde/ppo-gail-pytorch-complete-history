@@ -1,4 +1,4 @@
-from collections import namedtuple, defaultdict
+from collections import defaultdict
 import os.path as osp
 
 from gym import spaces
@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
+from helpers.math_util import LRScheduler
 from helpers.distributed_util import average_gradients, sync_with_root
 from agents.nets import GaussPolicy, Value, CatPolicy
 from agents.gae import gae
@@ -21,6 +22,8 @@ class PPOAgent(object):
 
     def __init__(self, env, device, hps):
         self.env = env
+        self.device = device
+        self.hps = hps
 
         self.ob_space = self.env.observation_space
         self.ob_shape = self.ob_space.shape
@@ -29,11 +32,11 @@ class PPOAgent(object):
 
         log_env_info(logger, self.env)
 
+        assert len(self.ob_shape) in [1, 3], "invalid observation space shape."
+        self.hps.visual = len(self.ob_shape) == 3  # add it to hps, passed on to the nets
         self.is_discrete = isinstance(self.ac_space, spaces.Discrete)
         self.ac_dim = self.ac_space.n if self.is_discrete else self.ac_shape[-1]
 
-        self.device = device
-        self.hps = hps
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
@@ -50,16 +53,13 @@ class PPOAgent(object):
         if not self.hps.shared_value:
             self.v_optimizer = torch.optim.Adam(self.value.parameters(), lr=self.hps.v_lr)
 
-        # Set up the learning rate schedule
-        def _lr(t):  # flake8: using a def instead of a lambda
-            if self.hps.with_scheduler:
-                return (1.0 - ((t - 1.0) / (self.hps.num_timesteps //
-                                            self.hps.rollout_len)))
-            else:
-                return 1.0
-
         # Set up lr scheduler
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.p_optimizer, _lr)
+        self.scheduler = LRScheduler(
+            optimizer=self.p_optimizer,
+            initial_lr=self.hps.p_lr,
+            lr_schedule=self.hps.lr_schedule,
+            total_num_steps=self.hps.num_timesteps,
+        )
 
         log_module_info(logger, 'policy', self.policy)
         if not self.hps.shared_value:
@@ -125,10 +125,11 @@ class PPOAgent(object):
                 advantage = chunk['advs'].to(self.device)
                 td_lam_return = chunk['td_lam_rets'].to(self.device)
 
-                # Update running moments
-                self.policy.rms_obs.update(state)
-                if not self.hps.shared_value:
-                    self.value.rms_obs.update(state)
+                if not self.hps.visual:
+                    # Update running moments
+                    self.policy.rms_obs.update(state)
+                    if not self.hps.shared_value:
+                        self.value.rms_obs.update(state)
 
                 # Policy loss
                 entropy_loss = -self.hps.p_ent_reg_scale * self.policy.entropy(state).mean()
@@ -177,7 +178,10 @@ class PPOAgent(object):
                 if self.hps.clip_norm > 0:
                     U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
                 self.p_optimizer.step()
-                self.scheduler.step(iters_so_far)
+
+                _lr = self.scheduler.step(steps_so_far=iters_so_far * self.hps.rollout_len)
+                logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
+
                 if not self.hps.shared_value:
                     self.v_optimizer.zero_grad()
                     v_loss.backward()
@@ -189,31 +193,14 @@ class PPOAgent(object):
                 self.rnd.update(dataloader)  # ignore returned var
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
-        return metrics, self.scheduler.get_last_lr()
+        return metrics, _lr
 
-    def save(self, path, iters):
-        SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])
-        p_bundle = SaveBundle(
-            model=self.policy.state_dict(),
-            optimizer=self.p_optimizer.state_dict(),
-            scheduler=self.scheduler.state_dict(),
-        )
+    def save(self, path, iters_so_far):
+        torch.save(self.policy.state_dict(), osp.join(path, f"policy_{iters_so_far}.pth"))
         if not self.hps.shared_value:
-            v_bundle = SaveBundle(
-                model=self.value.state_dict(),
-                optimizer=self.v_optimizer.state_dict(),
-                scheduler=None,
-            )
-        torch.save(p_bundle._asdict(), osp.join(path, "p_iter{}.pth".format(iters)))
-        if not self.hps.shared_value:
-            torch.save(v_bundle._asdict(), osp.join(path, "v_iter{}.pth".format(iters)))
+            torch.save(self.value.state_dict(), osp.join(path, f"value_{iters_so_far}.pth"))
 
-    def load(self, path, iters):
-        p_bundle = torch.load(osp.join(path, "p_iter{}.pth".format(iters)))
-        self.policy.load_state_dict(p_bundle['model'])
-        self.p_optimizer.load_state_dict(p_bundle['optimizer'])
-        self.scheduler.load_state_dict(p_bundle['scheduler'])
+    def load(self, path, iters_so_far):
+        self.policy.load_state_dict(torch.load(osp.join(path, f"policy_{iters_so_far}.pth")))
         if not self.hps.shared_value:
-            v_bundle = torch.load(osp.join(path, "v_iter{}.pth".format(iters)))
-            self.value.load_state_dict(v_bundle['model'])
-            self.v_optimizer.load_state_dict(v_bundle['optimizer'])
+            self.value.load_state_dict(torch.load(osp.join(path, f"value_{iters_so_far}.pth")))

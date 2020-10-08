@@ -1,4 +1,4 @@
-from collections import namedtuple, defaultdict
+from collections import defaultdict
 import os.path as osp
 
 import torch
@@ -12,8 +12,8 @@ from gym import spaces
 from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
+from helpers.math_util import LRScheduler
 from helpers.distributed_util import average_gradients, sync_with_root
-# from helpers.distributed_util import mpi_mean_like
 from agents.nets import GaussPolicy, Value, Discriminator
 from agents.gae import gae
 
@@ -27,6 +27,9 @@ class GAILAgent(object):
 
     def __init__(self, env, device, hps, expert_dataset):
         self.env = env
+        self.device = device
+        self.hps = hps
+
         self.ob_space = self.env.observation_space
         self.ob_shape = self.ob_space.shape
         self.ac_space = self.env.action_space
@@ -34,15 +37,17 @@ class GAILAgent(object):
 
         log_env_info(logger, self.env)
 
+        assert len(self.ob_shape) == 1, "invalid observation space shape (for now)."
         self.is_discrete = isinstance(self.ac_space, spaces.Discrete)
         self.ob_dim = self.ob_shape[0]  # num dims
         self.ac_dim = self.ac_shape[0]  # num dims
-        self.device = device
-        self.hps = hps
-        self.expert_dataset = expert_dataset
-        assert self.hps.clip_norm >= 0
+
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
+
+        # Define demo dataset
+        self.expert_dataset = expert_dataset
+        self.eval_mode = self.expert_dataset is None
 
         # Parse the label smoothing types
         self.apply_ls_fake = self.parse_label_smoothing_type(self.hps.fake_ls_type)
@@ -54,40 +59,41 @@ class GAILAgent(object):
         if not self.hps.shared_value:
             self.value = Value(self.env, self.hps).to(self.device)
             sync_with_root(self.value)
-        self.discriminator = Discriminator(self.env, self.hps).to(self.device)
-        sync_with_root(self.discriminator)
-
-        # Set up demonstrations dataset
-        self.e_batch_size = min(len(self.expert_dataset), self.hps.batch_size)
-        self.e_dataloader = DataLoader(
-            self.expert_dataset,
-            self.e_batch_size,
-            shuffle=True,
-            drop_last=True,
-        )
-        assert len(self.e_dataloader) > 0
 
         # Set up the optimizers
         self.p_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.hps.p_lr)
         if not self.hps.shared_value:
             self.v_optimizer = torch.optim.Adam(self.value.parameters(), lr=self.hps.v_lr)
-        self.d_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=self.hps.d_lr)
-
-        # Set up the learning rate schedule
-        def _lr(t):  # flake8: using a def instead of a lambda
-            if self.hps.with_scheduler:
-                return (1.0 - ((t - 1.0) / (self.hps.num_timesteps //
-                                            self.hps.rollout_len)))
-            else:
-                return 1.0
 
         # Set up lr scheduler
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.p_optimizer, _lr)
+        self.scheduler = LRScheduler(
+            optimizer=self.p_optimizer,
+            initial_lr=self.hps.p_lr,
+            lr_schedule=self.hps.lr_schedule,
+            total_num_steps=self.hps.num_timesteps,
+        )
+
+        if not self.eval_mode:
+            # Set up demonstrations dataset
+            self.e_batch_size = min(len(self.expert_dataset), self.hps.batch_size)
+            self.e_dataloader = DataLoader(
+                self.expert_dataset,
+                self.e_batch_size,
+                shuffle=True,
+                drop_last=True,
+            )
+            assert len(self.e_dataloader) > 0
+            # Create discriminator
+            self.discriminator = Discriminator(self.env, self.hps).to(self.device)
+            sync_with_root(self.discriminator)
+            # Create optimizer
+            self.d_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=self.hps.d_lr)
 
         log_module_info(logger, 'policy', self.policy)
         if not self.hps.shared_value:
             log_module_info(logger, 'value', self.value)
-        log_module_info(logger, 'discriminator', self.discriminator)
+        if not self.eval_mode:
+            log_module_info(logger, 'discriminator', self.discriminator)
 
         if (self.hps.reward_type == 'red') or (self.hps.reward_type == 'gail_red_mod'):
             # Create nets
@@ -403,7 +409,10 @@ class GAILAgent(object):
                 if self.hps.clip_norm > 0:
                     U.clip_grad_norm_(self.policy.parameters(), self.hps.clip_norm)
                 self.p_optimizer.step()
-                self.scheduler.step(iters_so_far)
+
+                _lr = self.scheduler.step(steps_so_far=iters_so_far * self.hps.rollout_len)
+                logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
+
                 if not self.hps.shared_value:
                     self.v_optimizer.zero_grad()
                     v_loss.backward()
@@ -421,7 +430,7 @@ class GAILAgent(object):
                 self.dyn.update(dataloader)  # ignore returned var
 
         metrics = {k: torch.stack(v).mean().cpu().data.numpy() for k, v in metrics.items()}
-        return metrics, self.scheduler.get_last_lr()
+        return metrics, _lr
 
     def update_discriminator(self, rollout):
         """Update the discriminator network"""
@@ -641,38 +650,16 @@ class GAILAgent(object):
                 dyn_reward = self.dyn.get_int_rew(input_a, input_b, input_c)
             return dyn_reward * reward
 
-    def save(self, path, iters):
-        SaveBundle = namedtuple('SaveBundle', ['model', 'optimizer', 'scheduler'])
-        p_bundle = SaveBundle(
-            model=self.policy.state_dict(),
-            optimizer=self.p_optimizer.state_dict(),
-            scheduler=self.scheduler.state_dict(),
-        )
+    def save(self, path, iters_so_far):
+        torch.save(self.policy.state_dict(), osp.join(path, f"policy_{iters_so_far}.pth"))
         if not self.hps.shared_value:
-            v_bundle = SaveBundle(
-                model=self.value.state_dict(),
-                optimizer=self.v_optimizer.state_dict(),
-                scheduler=None,
-            )
-        d_bundle = SaveBundle(
-            model=self.policy.state_dict(),
-            optimizer=self.d_optimizer.state_dict(),
-            scheduler=None
-        )
-        torch.save(p_bundle._asdict(), osp.join(path, "p_iter{}.pth".format(iters)))
-        if not self.hps.shared_value:
-            torch.save(v_bundle._asdict(), osp.join(path, "v_iter{}.pth".format(iters)))
-        torch.save(d_bundle._asdict(), osp.join(path, "d_iter{}.pth".format(iters)))
+            torch.save(self.value.state_dict(), osp.join(path, f"value_{iters_so_far}.pth"))
+        if not self.eval_mode:
+            torch.save(self.discriminator.state_dict(), osp.join(path, f"discriminator_{iters_so_far}.pth"))
 
-    def load(self, path, iters):
-        p_bundle = torch.load(osp.join(path, "p_iter{}.pth".format(iters)))
-        self.policy.load_state_dict(p_bundle['model'])
-        self.p_optimizer.load_state_dict(p_bundle['optimizer'])
-        self.scheduler.load_state_dict(p_bundle['scheduler'])
+    def load(self, path, iters_so_far):
+        self.policy.load_state_dict(torch.load(osp.join(path, f"policy_{iters_so_far}.pth")))
         if not self.hps.shared_value:
-            v_bundle = torch.load(osp.join(path, "v_iter{}.pth".format(iters)))
-            self.value.load_state_dict(v_bundle['model'])
-            self.v_optimizer.load_state_dict(v_bundle['optimizer'])
-        d_bundle = torch.load(osp.join(path, "d_iter{}.pth".format(iters)))
-        self.discriminator.load_state_dict(d_bundle['model'])
-        self.d_optimizer.load_state_dict(d_bundle['optimizer'])
+            self.value.load_state_dict(torch.load(osp.join(path, f"value_{iters_so_far}.pth")))
+        if not self.eval_mode:
+            self.discriminator.load_state_dict(torch.load(osp.join(path, f"discriminator_{iters_so_far}.pth")))

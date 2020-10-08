@@ -17,6 +17,9 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video
 
 
+MAXLEN = 40
+
+
 def ppo_rollout_generator(env, agent, rollout_len):
 
     benchmark = get_benchmark(agent.hps.env_id)
@@ -468,9 +471,9 @@ def learn(args,
 
     # Create collections
     d = defaultdict(list)
-    b_eval_ret = deque(maxlen=10)
+    ret_eval_deque = deque(maxlen=MAXLEN)
     if benchmark == 'safety':
-        b_eval_cost = deque(maxlen=10)
+        cost_eval_deque = deque(maxlen=MAXLEN)
 
     if rank == 0:
         # Set up model save directory
@@ -598,9 +601,9 @@ def learn(args,
                         if benchmark == 'safety':
                             d['eval_env_cost'].append(eval_ep['ep_env_cost'])
 
-                    b_eval_ret.append(np.mean(d['eval_env_ret']))
+                    ret_eval_deque.append(np.mean(d['eval_env_ret']))
                     if benchmark == 'safety':
-                        b_eval_cost.append(np.mean(d['eval_env_cost']))
+                        cost_eval_deque.append(np.mean(d['eval_env_cost']))
 
         # Increment counters
         iters_so_far += 1
@@ -615,10 +618,10 @@ def learn(args,
             logger.record_tabular('timestep', timesteps_so_far)
             logger.record_tabular('eval_len', np.mean(d['eval_len']))
             logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-            logger.record_tabular('avg_eval_env_ret', np.mean(b_eval_ret))
+            logger.record_tabular('avg_eval_env_ret', np.mean(ret_eval_deque))
             if benchmark == 'safety':
                 logger.record_tabular('eval_env_cost', np.mean(d['eval_env_cost']))
-                logger.record_tabular('avg_eval_env_cost', np.mean(b_eval_cost))
+                logger.record_tabular('avg_eval_env_cost', np.mean(cost_eval_deque))
             if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                 logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
             logger.info("dumping stats in .csv file")
@@ -643,11 +646,11 @@ def learn(args,
 
             wandb.log({'eval_len': np.mean(d['eval_len']),
                        'eval_env_ret': np.mean(d['eval_env_ret']),
-                       'avg_eval_env_ret': np.mean(b_eval_ret)},
+                       'avg_eval_env_ret': np.mean(ret_eval_deque)},
                       step=timesteps_so_far)
             if benchmark == 'safety':
                 wandb.log({'eval_env_cost': np.mean(d['eval_env_cost']),
-                           'avg_eval_env_cost': np.mean(b_eval_cost)},
+                           'avg_eval_env_cost': np.mean(cost_eval_deque)},
                           step=timesteps_so_far)
 
         # Clear the iteration's running stats
