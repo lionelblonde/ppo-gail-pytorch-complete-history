@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils as U
-from helpers.distributed_util import RunMoms
 
 
 STANDARDIZED_OB_CLAMPS = [-5., 5.]
@@ -468,13 +467,13 @@ def perception_stack_parser(x):
 
 class GaussPolicy(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(GaussPolicy, self).__init__()
         ac_dim = env.action_space.shape[0]
         self.hps = hps
         if not self.hps.visual:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+            self.rms_obs = rms_obs
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(self.hps.perception_stack)
         self.perception_stack = net_lambda(env, self.hps)
@@ -580,13 +579,13 @@ class GaussPolicy(nn.Module):
 
 class CatPolicy(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(CatPolicy, self).__init__()
         ac_dim = env.action_space.n
         self.hps = hps
         if not self.hps.visual:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+            self.rms_obs = rms_obs
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(hps.perception_stack)
         self.perception_stack = net_lambda(env, hps)
@@ -669,12 +668,12 @@ class CatPolicy(nn.Module):
 
 class Value(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(Value, self).__init__()
         self.hps = hps
         if not self.hps.visual:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+            self.rms_obs = rms_obs
         # Define perception stack
         net_lambda, fc_in = perception_stack_parser(self.hps.perception_stack)
         self.perception_stack = net_lambda(env, self.hps)
@@ -703,7 +702,7 @@ class Value(nn.Module):
 
 class Discriminator(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(Discriminator, self).__init__()
         self.hps = hps
         self.leak = RELU_LEAK
@@ -717,7 +716,7 @@ class Discriminator(nn.Module):
         apply_sn = snwrap(use_sn=self.hps.spectral_norm)
         if self.hps.d_batch_norm and not self.hps.visual:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=True)
+            self.rms_obs = rms_obs
         # Define the input dimension
         in_dim = ob_dim
         if self.hps.state_only:

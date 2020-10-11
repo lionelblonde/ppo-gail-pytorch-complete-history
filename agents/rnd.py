@@ -11,10 +11,14 @@ from agents.nets import init
 from helpers.distributed_util import RunMoms
 
 
+STANDARDIZED_OB_CLAMPS = [-5., 5.]
+
+
 class PredNet(nn.Module):
 
-    def __init__(self, env, hps):
+    def __init__(self, env, hps, rms_obs):
         super(PredNet, self).__init__()
+        assert not self.hps.visual, "network not adapted to visual input (for now)"
         ob_dim = env.observation_space.shape[0]
         if hps.wrap_absorb:
             ob_dim += 1
@@ -22,7 +26,7 @@ class PredNet(nn.Module):
         self.leak = 0.1
         if self.hps.rnd_batch_norm:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=False)
+            self.rms_obs = rms_obs
         # Assemble the layers
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
@@ -46,20 +50,20 @@ class PredNet(nn.Module):
             # Apply normalization
             if self.hps.wrap_absorb:
                 obs_ = obs.clone()[:, 0:-1]
-                obs_ = torch.clamp(self.rms_obs.standardize(obs_), -5., 5.)
+                obs_ = self.rms_obs.standardize(obs_).clamp(*STANDARDIZED_OB_CLAMPS)
                 obs = torch.cat([obs_, obs[:, -1].unsqueeze(-1)], dim=-1)
             else:
-                obs = torch.clamp(self.rms_obs.standardize(obs), -5., 5.)
+                obs = self.rms_obs.standardize(obs).clamp(*STANDARDIZED_OB_CLAMPS)
         else:
-            obs = torch.clamp(obs, -5., 5.)
+            obs = obs.clamp(*STANDARDIZED_OB_CLAMPS)
         x = self.fc_stack(obs)
         return x
 
 
 class TargNet(PredNet):
 
-    def __init__(self, env, hps):
-        super(TargNet, self).__init__(env, hps)
+    def __init__(self, env, hps, rms_obs):
+        super(TargNet, self).__init__(env, hps, rms_obs)
         ob_dim = env.observation_space.shape[0]
         if hps.wrap_absorb:
             ob_dim += 1
@@ -67,7 +71,7 @@ class TargNet(PredNet):
         self.leak = 0.1
         if self.hps.rnd_batch_norm:
             # Define observation whitening
-            self.rms_obs = RunMoms(shape=env.observation_space.shape, use_mpi=False)
+            self.rms_obs = rms_obs
         # Assemble the layers
         self.fc_stack = nn.Sequential(OrderedDict([
             ('fc_block_1', nn.Sequential(OrderedDict([
@@ -90,14 +94,15 @@ class RandomNetworkDistillation(object):
     as opposed to learning one advantage for each, since we do not play with different horizons.
     """
 
-    def __init__(self, env, device, hps):
+    def __init__(self, env, device, hps, rms_obs):
         self.env = env
         self.device = device
         self.hps = hps
+        self.rms_obs = rms_obs
 
         # Create nets
-        self.pred_net = PredNet(self.env, self.hps).to(self.device)
-        self.targ_net = TargNet(self.env, self.hps).to(self.device)  # fixed, not trained
+        self.pred_net = PredNet(self.env, self.hps, self.rms_obs).to(self.device)
+        self.targ_net = TargNet(self.env, self.hps, self.rms_obs).to(self.device)  # fixed, not trained
 
         # Create optimizer
         self.optimizer = torch.optim.Adam(self.pred_net.parameters(), lr=self.hps.rnd_lr)

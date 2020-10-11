@@ -11,7 +11,7 @@ from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
 from helpers.math_util import LRScheduler
-from helpers.distributed_util import average_gradients, sync_with_root
+from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.nets import GaussPolicy, Value, CatPolicy
 from agents.gae import gae
 
@@ -40,12 +40,18 @@ class PPOAgent(object):
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
 
+        # Create observation normalizer that maintains running statistics
+        if not self.hps.visual:
+            self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
+        else:
+            self.rms_obs = None
+
         # Create nets
         Policy = CatPolicy if self.is_discrete else GaussPolicy
-        self.policy = Policy(self.env, self.hps).to(self.device)
+        self.policy = Policy(self.env, self.hps, self.rms_obs).to(self.device)
         sync_with_root(self.policy)
         if not self.hps.shared_value:
-            self.value = Value(self.env, self.hps).to(self.device)
+            self.value = Value(self.env, self.hps, self.rms_obs).to(self.device)
             sync_with_root(self.value)
 
         # Set up the optimizer
@@ -70,6 +76,7 @@ class PPOAgent(object):
                 self.env,
                 self.device,
                 self.hps,
+                self.rms_obs,
             )
 
     def predict(self, ob, sample_or_mode):
@@ -126,10 +133,8 @@ class PPOAgent(object):
                 td_lam_return = chunk['td_lam_rets'].to(self.device)
 
                 if not self.hps.visual:
-                    # Update running moments
-                    self.policy.rms_obs.update(state)
-                    if not self.hps.shared_value:
-                        self.value.rms_obs.update(state)
+                    # Update the observation normalizer
+                    self.rms_obs.update(state)
 
                 # Policy loss
                 entropy_loss = -self.hps.p_ent_reg_scale * self.policy.entropy(state).mean()

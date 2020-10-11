@@ -13,7 +13,7 @@ from helpers import logger
 from helpers.dataset import Dataset
 from helpers.console_util import log_env_info, log_module_info
 from helpers.math_util import LRScheduler
-from helpers.distributed_util import average_gradients, sync_with_root
+from helpers.distributed_util import average_gradients, sync_with_root, RunMoms
 from agents.nets import GaussPolicy, Value, Discriminator
 from agents.gae import gae
 
@@ -38,12 +38,18 @@ class GAILAgent(object):
         log_env_info(logger, self.env)
 
         assert len(self.ob_shape) == 1, "invalid observation space shape (for now)."
+
+        self.hps.visual = len(self.ob_shape) == 3  # add it to hps, passed on to the nets (always False)
+
         self.is_discrete = isinstance(self.ac_space, spaces.Discrete)
         self.ob_dim = self.ob_shape[0]  # num dims
         self.ac_dim = self.ac_shape[0]  # num dims
 
         if self.hps.clip_norm <= 0:
             logger.info("clip_norm={} <= 0, hence disabled.".format(self.hps.clip_norm))
+
+        # Create observation normalizer that maintains running statistics
+        self.rms_obs = RunMoms(shape=self.ob_shape, use_mpi=True)
 
         # Define demo dataset
         self.expert_dataset = expert_dataset
@@ -54,10 +60,10 @@ class GAILAgent(object):
         self.apply_ls_real = self.parse_label_smoothing_type(self.hps.real_ls_type)
 
         # Create nets
-        self.policy = GaussPolicy(self.env, self.hps).to(self.device)
+        self.policy = GaussPolicy(self.env, self.hps, self.rms_obs).to(self.device)
         sync_with_root(self.policy)
         if not self.hps.shared_value:
-            self.value = Value(self.env, self.hps).to(self.device)
+            self.value = Value(self.env, self.hps, self.rms_obs).to(self.device)
             sync_with_root(self.value)
 
         # Set up the optimizers
@@ -84,7 +90,7 @@ class GAILAgent(object):
             )
             assert len(self.e_dataloader) > 0
             # Create discriminator
-            self.discriminator = Discriminator(self.env, self.hps).to(self.device)
+            self.discriminator = Discriminator(self.env, self.hps, self.rms_obs).to(self.device)
             sync_with_root(self.discriminator)
             # Create optimizer
             self.d_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=self.hps.d_lr)
@@ -102,6 +108,7 @@ class GAILAgent(object):
                 self.device,
                 self.hps,
                 self.expert_dataset,
+                self.rms_obs,
             )
             # Train the predictor network on expert dataset
             logger.info(">>>> RED training: BEG")
@@ -117,6 +124,7 @@ class GAILAgent(object):
                 self.env,
                 self.device,
                 self.hps,
+                self.rms_obs,
             )
 
         if self.hps.reward_type == 'gail_kye_mod':
@@ -124,6 +132,7 @@ class GAILAgent(object):
                 self.env,
                 self.device,
                 self.hps,
+                self.rms_obs,
             )
 
         if self.hps.reward_type == 'gail_dyn_mod':
@@ -131,6 +140,7 @@ class GAILAgent(object):
                 self.env,
                 self.device,
                 self.hps,
+                self.rms_obs,
             )
 
     def parse_label_smoothing_type(self, ls_type):
@@ -246,10 +256,8 @@ class GAILAgent(object):
                 advantage = batch['advs'].to(self.device)
                 td_lam_return = batch['td_lam_rets'].to(self.device)
 
-                # Update running moments
-                self.policy.rms_obs.update(state)
-                if not self.hps.shared_value:
-                    self.value.rms_obs.update(state)
+                # Update the observation normalizer
+                self.rms_obs.update(state)
 
                 # Policy loss
                 entropy_loss = -self.hps.p_ent_reg_scale * self.policy.entropy(state).mean()
