@@ -24,6 +24,8 @@ def train(args):
     rank = comm.Get_rank()
     world_size = comm.Get_size()
 
+    args.algo = args.algo + '_' + str(world_size).zfill(3)
+
     torch.set_num_threads(1)
 
     # Initialize and configure experiment
@@ -56,7 +58,7 @@ def train(args):
     env = make_env(args.env_id, worker_seed)
 
     # Create an agent wrapper
-    if args.algo == 'ppo':
+    if args.algo.split('_')[0] == 'ppo':
         def agent_wrapper():
             return PPOAgent(
                 env=env,
@@ -64,7 +66,7 @@ def train(args):
                 hps=args,
             )
 
-    elif args.algo == 'gail':
+    elif args.algo.split('_')[0] == 'gail':
         # Create the expert demonstrations dataset from expert trajectories
         expert_dataset = DemoDataset(
             expert_path=args.expert_path,

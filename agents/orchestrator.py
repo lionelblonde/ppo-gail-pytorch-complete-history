@@ -469,13 +469,13 @@ def learn(args,
     timesteps_so_far = 0
     tstart = time.time()
 
-    # Create collections
-    d = defaultdict(list)
-    ret_eval_deque = deque(maxlen=MAXLEN)
-    if benchmark == 'safety':
-        cost_eval_deque = deque(maxlen=MAXLEN)
-
     if rank == 0:
+        # Create collections
+        d = defaultdict(list)
+        ret_eval_deque = deque(maxlen=MAXLEN)
+        if benchmark == 'safety':
+            cost_eval_deque = deque(maxlen=MAXLEN)
+
         # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
         os.makedirs(ckpt_dir, exist_ok=True)
@@ -523,9 +523,9 @@ def learn(args,
             break
 
     # Create rollout generator for training the agent
-    if args.algo == 'ppo':
+    if args.algo.split('_')[0] == 'ppo':
         roll_gen = ppo_rollout_generator(env, agent, args.rollout_len)
-    elif args.algo == 'gail':
+    elif args.algo.split('_')[0] == 'gail':
         roll_gen = gail_rollout_generator(env, agent, args.rollout_len)
     else:
         raise NotImplementedError
@@ -541,10 +541,10 @@ def learn(args,
         # if iters_so_far % 20 == 0:
         #     # Check if the mpi workers are still synced
         #     sync_check(agent.policy)
-        #     if agent.hps.algo == 'gail':
+        #     if agent.hps.algo.split('_')[0] == 'gail':
         #         sync_check(agent.discriminator)
 
-        if args.algo == 'ppo':
+        if args.algo.split('_')[0] == 'ppo':
 
             with timed('interacting'):
                 rollout = roll_gen.__next__()
@@ -554,12 +554,12 @@ def learn(args,
                     rollout=rollout,
                     iters_so_far=iters_so_far,
                 )
-                if iters_so_far % args.eval_frequency == 0:
+                if rank == 0 and iters_so_far % args.eval_frequency == 0:
                     # Log training stats
                     d['pol_losses'].append(metrics['p_loss'])
                     d['val_losses'].append(metrics['v_loss'])
 
-        elif args.algo == 'gail':
+        elif args.algo.split('_')[0] == 'gail':
 
             for _ in range(agent.hps.g_steps):
                 with timed('interacting'):
@@ -570,7 +570,7 @@ def learn(args,
                         rollout=rollout,
                         iters_so_far=iters_so_far,
                     )
-                    if iters_so_far % args.eval_frequency == 0:
+                    if rank == 0 and iters_so_far % args.eval_frequency == 0:
                         # Log training stats
                         d['pol_losses'].append(metrics['p_loss'])
                         d['val_losses'].append(metrics['v_loss'])
@@ -582,34 +582,32 @@ def learn(args,
                     metrics = agent.update_discriminator(
                         rollout=rollout,
                     )
-                    if iters_so_far % args.eval_frequency == 0:
+                    if rank == 0 and iters_so_far % args.eval_frequency == 0:
                         # Log training stats
                         d['dis_losses'].append(metrics['d_loss'])
 
-        if eval_env is not None:
-            assert rank == 0, "non-zero rank mpi worker forbidden here"
+        if rank == 0 and iters_so_far % args.eval_frequency == 0:
 
-            if iters_so_far % args.eval_frequency == 0:
+            with timed("evaluating"):
 
-                with timed("evaluating"):
-                    for eval_step in range(args.eval_steps_per_iter):
-                        # Sample an episode w/ non-perturbed actor w/o storing anything
-                        eval_ep = eval_ep_gen.__next__()
-                        # Aggregate data collected during the evaluation to the buffers
-                        d['eval_len'].append(eval_ep['ep_len'])
-                        d['eval_env_ret'].append(eval_ep['ep_env_ret'])
-                        if benchmark == 'safety':
-                            d['eval_env_cost'].append(eval_ep['ep_env_cost'])
-
-                    ret_eval_deque.append(np.mean(d['eval_env_ret']))
+                for eval_step in range(args.eval_steps_per_iter):
+                    # Sample an episode w/ non-perturbed actor w/o storing anything
+                    eval_ep = eval_ep_gen.__next__()
+                    # Aggregate data collected during the evaluation to the buffers
+                    d['eval_len'].append(eval_ep['ep_len'])
+                    d['eval_env_ret'].append(eval_ep['ep_env_ret'])
                     if benchmark == 'safety':
-                        cost_eval_deque.append(np.mean(d['eval_env_cost']))
+                        d['eval_env_cost'].append(eval_ep['ep_env_cost'])
+
+                ret_eval_deque.append(np.mean(d['eval_env_ret']))
+                if benchmark == 'safety':
+                    cost_eval_deque.append(np.mean(d['eval_env_cost']))
 
         # Increment counters
         iters_so_far += 1
-        if args.algo == 'ppo':
+        if args.algo.split('_')[0] == 'ppo':
             timesteps_so_far += args.rollout_len
-        elif args.algo == 'gail':
+        elif args.algo.split('_')[0] == 'gail':
             timesteps_so_far += (agent.hps.g_steps * args.rollout_len)
 
         if rank == 0 and (iters_so_far - 1) % args.eval_frequency == 0:
@@ -637,7 +635,7 @@ def learn(args,
                        'lrnow': np.array(lrnow)},
                       step=timesteps_so_far)
 
-            if args.algo == 'gail':
+            if args.algo.split('_')[0] == 'gail':
                 wandb.log({'dis_loss': np.mean(d['dis_losses'])},
                           step=timesteps_so_far)
                 if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
@@ -653,8 +651,8 @@ def learn(args,
                            'avg_eval_env_cost': np.mean(cost_eval_deque)},
                           step=timesteps_so_far)
 
-        # Clear the iteration's running stats
-        d.clear()
+            # Clear the iteration's running stats
+            d.clear()
 
     if rank == 0:
         # Save once we are done iterating

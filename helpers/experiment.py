@@ -99,5 +99,10 @@ class ExperimentInitializer:
             name += "{}.".format(self.args.task)
             name += "num_trajs_{}.".format(self.args.num_trajs)
         name += self.args.env_id
+        name += f".{self.args.algo}"
+        if self.args.task == 'train':
+            name += f"_{self.world_size}"
+        if self.args.algo == 'gail':
+            name += ".demos{}".format(str(self.args.num_demos).zfill(3))
         name += ".seed{}".format(str(self.args.seed).zfill(2))
         return name
