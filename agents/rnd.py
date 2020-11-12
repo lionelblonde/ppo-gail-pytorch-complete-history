@@ -18,11 +18,11 @@ class PredNet(nn.Module):
 
     def __init__(self, env, hps, rms_obs):
         super(PredNet, self).__init__()
+        self.hps = hps
         assert not self.hps.visual, "network not adapted to visual input (for now)"
         ob_dim = env.observation_space.shape[0]
-        if hps.wrap_absorb:
+        if self.hps.wrap_absorb:
             ob_dim += 1
-        self.hps = hps
         self.leak = 0.1
         if self.hps.rnd_batch_norm:
             # Define observation whitening
@@ -124,15 +124,6 @@ class RandomNetworkDistillation(object):
 
             # Transfer to device
             state = batch['obs0'].to(self.device)
-
-            if self.hps.rnd_batch_norm:
-                if 'obs_orig' in batch:  # gail
-                    _state = batch['obs0_orig'].to(self.device)
-                else:  # ppo
-                    _state = batch['obs0'].to(self.device)
-                # Update running moments for observations
-                self.pred_net.rms_obs.update(_state)
-                self.targ_net.rms_obs.update(_state)
 
             # Compute loss
             _loss = F.mse_loss(

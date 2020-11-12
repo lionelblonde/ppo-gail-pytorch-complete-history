@@ -18,13 +18,13 @@ class PredNet(nn.Module):
 
     def __init__(self, env, hps, rms_obs):
         super(PredNet, self).__init__()
+        self.hps = hps
         assert not self.hps.visual, "network not adapted to visual input (for now)"
         ob_dim = env.observation_space.shape[0]
         ac_dim = env.action_space.shape[0]
-        if hps.wrap_absorb:
+        if self.hps.wrap_absorb:
             ob_dim += 1
             ac_dim += 1
-        self.hps = hps
         self.leak = 0.1
         if self.hps.dyn_batch_norm:
             # Define observation whitening
@@ -103,23 +103,14 @@ class Forward(object):
             logger.info("updating dyn predictor")
 
             # Transfer to device
-            if self.hps.wrap_absorb:
-                _state = batch['obs0_orig'].to(self.device)
-            else:
-                _state = batch['obs0'].to(self.device)
             state = batch['obs0'].to(self.device)
             next_state = batch['obs1'].to(self.device)
             action = batch['acs'].to(self.device)
             if self.hps.wrap_absorb:
                 _, indices = self.remove_absorbing(state)
-                _state = _state[indices, :]
                 state = state[indices, :]
                 next_state = next_state[indices, :]
                 action = action[indices, :]
-
-            if self.hps.dyn_batch_norm:
-                # Update running moments for observations
-                self.pred_net.rms_obs.update(_state)
 
             # Compute loss
             _loss = F.mse_loss(

@@ -297,7 +297,7 @@ def ep_generator(env, agent, render, record):
             return rgb_x
 
         kwargs = {'mode': 'rgb_array'}
-        if benchmark == 'atari':
+        if benchmark in ['mujoco', 'atari']:
             def _render():
                 return bgr_to_rgb(env.render(**kwargs))
         elif benchmark in ['dmc', 'safety']:
@@ -312,7 +312,7 @@ def ep_generator(env, agent, render, record):
                 rgb_x = np.concatenate([_r, _g, _b], axis=-1)
                 del x, _b, _g, _r
                 return rgb_x
-        elif benchmark in ['mujoco', 'pycolab']:
+        elif benchmark in ['pycolab']:
             def _render():
                 return env.render(**kwargs)
         else:
