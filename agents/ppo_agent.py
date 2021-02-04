@@ -1,8 +1,10 @@
 from collections import defaultdict
+import os
 import os.path as osp
 
 from gym import spaces
 
+import numpy as np
 import torch
 import torch.nn.utils as U
 from torch.utils.data import DataLoader
@@ -16,6 +18,14 @@ from agents.nets import GaussPolicy, Value, CatPolicy
 from agents.gae import gae
 
 from agents.rnd import RandomNetworkDistillation
+
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class PPOAgent(object):
@@ -172,7 +182,8 @@ class PPOAgent(object):
                 # kl_approx_mpi = mpi_mean_like(kl_approx.detach().cpu().numpy())  # none or all
                 # kl_thres = 0.05  # not (yet) hyperparameterized
                 # if iters_so_far > 20 and kl_approx_mpi > 1.5 * kl_thres:
-                #     logger.info("triggered early-stopping")
+                #     if DEBUG:
+                #         logger.info("triggered early-stopping")
                 #     # Skip gradient update
                 #     break
 
@@ -185,7 +196,8 @@ class PPOAgent(object):
                 self.p_optimizer.step()
 
                 _lr = self.scheduler.step(steps_so_far=iters_so_far * self.hps.rollout_len)
-                logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
+                if DEBUG:
+                    logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
 
                 if not self.hps.shared_value:
                     self.v_optimizer.zero_grad()

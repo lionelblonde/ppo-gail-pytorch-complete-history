@@ -2,7 +2,7 @@ import time
 from copy import deepcopy
 import os
 import os.path as osp
-from collections import defaultdict, deque
+from collections import defaultdict
 import signal
 
 import wandb
@@ -17,7 +17,12 @@ from helpers.console_util import timed_cm_wrapper, log_iter_info
 from helpers.opencv_util import record_video
 
 
-MAXLEN = 40
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 1)
 
 
 def ppo_rollout_generator(env, agent, rollout_len):
@@ -462,7 +467,7 @@ def learn(args,
     benchmark = get_benchmark(agent.hps.env_id)
 
     # Create context manager that records the time taken by encapsulated ops
-    timed = timed_cm_wrapper(logger)
+    timed = timed_cm_wrapper(logger, use=DEBUG)
 
     num_iters = args.num_timesteps // args.rollout_len
     iters_so_far = 0
@@ -472,9 +477,6 @@ def learn(args,
     if rank == 0:
         # Create collections
         d = defaultdict(list)
-        ret_eval_deque = deque(maxlen=MAXLEN)
-        if benchmark == 'safety':
-            cost_eval_deque = deque(maxlen=MAXLEN)
 
         # Set up model save directory
         ckpt_dir = osp.join(args.checkpoint_dir, experiment_name)
@@ -514,13 +516,12 @@ def learn(args,
                     config=args.__dict__,
                     dir=args.root,
                 )
-            except ConnectionRefusedError:
-                pause = 5
+                break
+            except Exception:
+                pause = 10
                 logger.info("wandb co error. Retrying in {} secs.".format(pause))
                 time.sleep(pause)
-                continue
-            logger.info("wandb co established!")
-            break
+        logger.info("wandb co established!")
 
     # Create rollout generator for training the agent
     if args.algo.split('_')[0] == 'ppo':
@@ -536,7 +537,8 @@ def learn(args,
 
     while iters_so_far <= num_iters:
 
-        log_iter_info(logger, iters_so_far, num_iters, tstart)
+        if iters_so_far % 100 == 0 or DEBUG:
+            log_iter_info(logger, iters_so_far, num_iters, tstart)
 
         # if iters_so_far % 20 == 0:
         #     # Check if the mpi workers are still synced
@@ -599,10 +601,6 @@ def learn(args,
                     if benchmark == 'safety':
                         d['eval_env_cost'].append(eval_ep['ep_env_cost'])
 
-                ret_eval_deque.append(np.mean(d['eval_env_ret']))
-                if benchmark == 'safety':
-                    cost_eval_deque.append(np.mean(d['eval_env_cost']))
-
         # Increment counters
         iters_so_far += 1
         if args.algo.split('_')[0] == 'ppo':
@@ -616,10 +614,8 @@ def learn(args,
             logger.record_tabular('timestep', timesteps_so_far)
             logger.record_tabular('eval_len', np.mean(d['eval_len']))
             logger.record_tabular('eval_env_ret', np.mean(d['eval_env_ret']))
-            logger.record_tabular('avg_eval_env_ret', np.mean(ret_eval_deque))
             if benchmark == 'safety':
                 logger.record_tabular('eval_env_cost', np.mean(d['eval_env_cost']))
-                logger.record_tabular('avg_eval_env_cost', np.mean(cost_eval_deque))
             if agent.hps.kye_p and agent.hps.adaptive_aux_scaling:
                 logger.record_tabular('cos_sim_p', np.mean(d['cos_sims_p']))
             logger.info("dumping stats in .csv file")
@@ -643,12 +639,10 @@ def learn(args,
                               step=timesteps_so_far)
 
             wandb.log({'eval_len': np.mean(d['eval_len']),
-                       'eval_env_ret': np.mean(d['eval_env_ret']),
-                       'avg_eval_env_ret': np.mean(ret_eval_deque)},
+                       'eval_env_ret': np.mean(d['eval_env_ret'])},
                       step=timesteps_so_far)
             if benchmark == 'safety':
-                wandb.log({'eval_env_cost': np.mean(d['eval_env_cost']),
-                           'avg_eval_env_cost': np.mean(cost_eval_deque)},
+                wandb.log({'eval_env_cost': np.mean(d['eval_env_cost'])},
                           step=timesteps_so_far)
 
             # Clear the iteration's running stats

@@ -34,7 +34,7 @@ def gae(segment, gamma, lam, rew_key):
     # = delta[T-2] + gamma * lambda * delta[T-1] + (gamma * lambda)**2 * delta[T]
     # The computed GAE advantage relies only on deltas of future timesteps, hence the reversed
     for t in reversed(range(length)):
-        # Wether the current transition is terminal
+        # Whether the current transition is terminal
         nonterminal = 1 - dones[t + 1]
         # Compute the 1-step Temporal Difference residual
         delta = rews[t] + (gamma * vs[t + 1] * nonterminal) - vs[t]

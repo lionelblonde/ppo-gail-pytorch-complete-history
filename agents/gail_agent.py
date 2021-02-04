@@ -1,6 +1,8 @@
 from collections import defaultdict
+import os
 import os.path as osp
 
+import numpy as np
 import torch
 import torch.nn.utils as U
 import torch.nn.functional as F
@@ -21,6 +23,14 @@ from agents.red import RandomExpertDistillation
 from agents.rnd import RandomNetworkDistillation
 from agents.kye import KnowYourEnemy
 from agents.dyn import Forward
+
+
+debug_lvl = os.environ.get('DEBUG_LVL', 0)
+try:
+    debug_lvl = np.clip(int(debug_lvl), a_min=0, a_max=3)
+except ValueError:
+    debug_lvl = 0
+DEBUG = bool(debug_lvl >= 2)
 
 
 class GAILAgent(object):
@@ -242,7 +252,8 @@ class GAILAgent(object):
         for _ in range(self.hps.optim_epochs_per_iter):
 
             for batch in dataloader:
-                logger.info("updating policy")
+                if DEBUG:
+                    logger.info("updating policy")
 
                 # Transfer to device
                 if self.hps.wrap_absorb:
@@ -406,7 +417,8 @@ class GAILAgent(object):
                 # kl_approx_mpi = mpi_mean_like(kl_approx.detach().cpu().numpy())  # none or all
                 # kl_thres = 0.05  # not (yet) hyperparameterized
                 # if iters_so_far > 20 and kl_approx_mpi > 1.5 * kl_thres:
-                #     logger.info("triggered early-stopping", kl_approx_mpi)
+                #     if DEBUG:
+                #         logger.info("triggered early-stopping", kl_approx_mpi)
                 #     # Skip gradient update
                 #     break
 
@@ -419,7 +431,8 @@ class GAILAgent(object):
                 self.p_optimizer.step()
 
                 _lr = self.scheduler.step(steps_so_far=iters_so_far * self.hps.rollout_len)
-                logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
+                if DEBUG:
+                    logger.info(f"lr is {_lr} after {iters_so_far} timesteps")
 
                 if not self.hps.shared_value:
                     self.v_optimizer.zero_grad()
@@ -462,7 +475,8 @@ class GAILAgent(object):
         )
 
         for e_batch in self.e_dataloader:
-            logger.info("updating discriminator")
+            if DEBUG:
+                logger.info("updating discriminator")
 
             # Get a minibatch of policy data
             d_batch = next(iter(d_dataloader))
