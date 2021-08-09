@@ -673,6 +673,8 @@ class GAILAgent(object):
             return dyn_reward * reward
 
     def save(self, path, iters_so_far):
+        if self.hps.obs_norm:
+            torch.save(self.rms_obs.state_dict(), osp.join(path, f"rms_obs_{iters_so_far}.pth"))
         torch.save(self.policy.state_dict(), osp.join(path, f"policy_{iters_so_far}.pth"))
         if not self.hps.shared_value:
             torch.save(self.value.state_dict(), osp.join(path, f"value_{iters_so_far}.pth"))
@@ -680,6 +682,8 @@ class GAILAgent(object):
             torch.save(self.discriminator.state_dict(), osp.join(path, f"discriminator_{iters_so_far}.pth"))
 
     def load(self, path, iters_so_far):
+        if self.hps.obs_norm:
+            self.rms_obs.load_state_dict(torch.load(osp.join(path, f"rms_obs_{iters_so_far}.pth")))
         self.policy.load_state_dict(torch.load(osp.join(path, f"policy_{iters_so_far}.pth")))
         if not self.hps.shared_value:
             self.value.load_state_dict(torch.load(osp.join(path, f"value_{iters_so_far}.pth")))
