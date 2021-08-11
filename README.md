@@ -20,6 +20,12 @@ The repository covers the following algorithms:
     [this link](https://drive.google.com/drive/folders/1dGw-O6ZT_WWTuqDayIA9xat1jZgeiXoE?usp=sharing)
     (installation instructions below).
 
+The repository also offers implementations of the following:
+- [Random Network Distillation (RND)](http://arxiv.org/abs/1810.12894) exploration reward bonus
+- [Random Expert Distillation (RED)](http://arxiv.org/abs/1905.06750) imitation reward (based on RND)
+- Absorbing state wrapping mechanism as described in [Discriminator-Actor-Critic (DAC)](http://arxiv.org/abs/1809.02925)
+- [Positive-Unlabeled Reward Learning (PURL)](http://arxiv.org/abs/1911.00459) discriminator training
+
 ## Dependencies
 
 ### OS
