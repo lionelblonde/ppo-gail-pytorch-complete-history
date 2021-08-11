@@ -23,6 +23,8 @@ The repository covers the following algorithms:
 The repository also offers implementations of the following:
 - [Random Network Distillation (RND)](http://arxiv.org/abs/1810.12894) exploration reward bonus
 - [Random Expert Distillation (RED)](http://arxiv.org/abs/1905.06750) imitation reward (based on RND)
+- Model-based imitation reward modulation, penalizing the agent when its *controlability* is lower (metric aligned
+with the prediction error of the learned forward model, like *curiosity*, but in the opposite direction)
 - Absorbing state wrapping mechanism as described in [Discriminator-Actor-Critic (DAC)](http://arxiv.org/abs/1809.02925)
 - [Positive-Unlabeled Reward Learning (PURL)](http://arxiv.org/abs/1911.00459) discriminator training
 
