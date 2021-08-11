@@ -80,7 +80,7 @@ class Forward(object):
         # Define reward normalizer
         self.rms_pred_losses = RunMoms(shape=(1,), use_mpi=False)
 
-        log_module_info(logger, 'KYE Pred Network', self.pred_net)
+        log_module_info(logger, 'Forward Pred Network', self.pred_net)
 
     def remove_absorbing(self, x):
         non_absorbing_rows = []
